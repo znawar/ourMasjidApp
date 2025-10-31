@@ -1,46 +1,61 @@
-# Miscellaneous
-*.class
-*.log
-*.pyc
-*.swp
-.DS_Store
-.atom/
-.build/
-.buildlog/
-.history
-.svn/
-.swiftpm/
-migrate_working_dir/
-
-# IntelliJ related
-*.iml
-*.ipr
-*.iws
-.idea/
-
-# The .vscode folder contains launch configuration and tasks you configure in
-# VS Code which you may wish to be included in version control, so this line
-# is commented out by default.
-#.vscode/
-
-# Flutter/Dart/Pub related
-**/doc/api/
-**/ios/Flutter/.last_build_id
+# Flutter
 .dart_tool/
-.flutter-plugins-dependencies
+.packages
 .pub-cache/
 .pub/
-/build/
-/coverage/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+*.iml
+*.iws
+*.ipr
 
-# Symbolication related
-app.*.symbols
+# Android
+android/.gradle/
+android/.idea/
+android/local.properties
+android/gradle/wrapper/gradle-wrapper.jar
+android/app/build/
+android/app/src/main/java/com/example/masjidconnect/BuildConfig.java
 
-# Obfuscation related
-app.*.map.json
+# iOS
+ios/.generated/
+ios/Flutter/App.framework/
+ios/Flutter/Flutter.framework/
+ios/Flutter/Flutter.podspec
+ios/Pods/
+ios/Runner/GeneratedPluginRegistrant.*
+ios/.symlinks/
 
-# Android Studio will place build artifacts here
-/android/app/debug
-/android/app/profile
-/android/app/release
-.vercel
+# Web
+.webpack/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment variables
+.env
+.env.local
+.env.production
+
+# Deployment
+.netlify/
+.vercel/
+.netlify/functions/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
