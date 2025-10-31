@@ -407,7 +407,7 @@ String _getMasjidName(String displayName) { final parts = displayName.split(',')
                   child: TextField(
                     controller: _searchController,
                     decoration: InputDecoration(
-                      hintText: 'Search masjids worldwide...',
+                      hintText: 'Search masjids ...',
                       prefixIcon: const Icon(Icons.search),
                       suffixIcon: _searchController.text.isNotEmpty
                           ? IconButton(
@@ -475,12 +475,12 @@ String _getMasjidName(String displayName) { final parts = displayName.split(',')
                       Icon(Icons.mosque, size: 80, color: Colors.grey[400]),
                       const SizedBox(height: 16),
                       const Text(
-                        'Find Masjids Worldwide',
+                        'Find Masjids',
                         style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.black87),
                       ),
                       const SizedBox(height: 8),
                       const Text(
-                        'Search for any location or use your current location\nto find masjids around the world',
+                        'Search for masjids by name or find nearby ones using your location.',
                         style: TextStyle(fontSize: 16, color: Colors.grey),
                         textAlign: TextAlign.center,
                       ),
@@ -924,7 +924,7 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
                     ),
                     _buildPrayerRow('Fajr', prayerTimes['fajr'], currentPrayerName),
                     _buildDivider(),
-                    _buildPrayerRow('Shurug', prayerTimes['shurug'], currentPrayerName),
+                    _buildPrayerRow('Shuruq', prayerTimes['shuruq'], currentPrayerName),
                     _buildDivider(),
                     _buildPrayerRow('Dhuhr', prayerTimes['dhuhr'], currentPrayerName),
                     _buildDivider(),

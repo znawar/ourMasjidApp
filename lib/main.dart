@@ -4,7 +4,7 @@ import 'screens/mobile_home_screen.dart';
 import 'package:flutter_web_plugins/flutter_web_plugins.dart';
 
 void main() {
-  setUrlStrategy(PathUrlStrategy()); // Or HashUrlStrategy() if Path doesn't work
+  setUrlStrategy(PathUrlStrategy()); 
   runApp(const MyApp());
 }
 
@@ -59,11 +59,12 @@ class ResponsiveLauncher extends StatelessWidget {
         if (constraints.maxWidth > 900) {
           // TV Mode
           return TVDisplayScreen(
-            announcements: [
-              {'title': 'Parenting Workshop', 'subtitle': 'Saturday 5 PM'},
-              {'title': 'Kids Quiz Competition', 'subtitle': 'Sunday 10 AM'},
-              {'title': 'Hadith', 'subtitle': '“The best among you are those who learn the Qur’an and teach it.”'},
-            ],
+           announcements: [
+            {'imagePath': 'assets/images/WhatsApp Image 2025-10-31 at 9.48.01 PM (1).jpeg'},
+            {'imagePath': 'assets/images/WhatsApp Image 2025-10-31 at 9.48.01 PM.jpeg'},
+            {'imagePath': 'assets/images/Untitled design (1).png'},
+             ],
+
             prayerTimes: {
               'Fajr': {'adhan': '05:00', 'iqamah': '05:20'},
               'Dhuhr': {'adhan': '12:45', 'iqamah': '13:00'},
