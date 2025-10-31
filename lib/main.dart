@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'screens/tv_display_screen.dart';
 import 'screens/mobile_home_screen.dart';
+import 'package:flutter_web_plugins/flutter_web_plugins.dart';
 
 void main() {
+  setUrlStrategy(PathUrlStrategy()); // Or HashUrlStrategy() if Path doesn't work
   runApp(const MyApp());
 }
 
