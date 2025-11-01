@@ -4,6 +4,8 @@ import 'package:permission_handler/permission_handler.dart';
 import 'dart:convert';
 import 'dart:async';
 import 'package:http/http.dart' as http;
+import 'package:url_launcher/url_launcher.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 
 void main() {
   runApp(const MyApp());
@@ -65,91 +67,82 @@ class _HomeScreenState extends State<HomeScreen> {
   final TextEditingController _searchController = TextEditingController();
   bool isSearching = false;
 
-  // Search masjids worldwide 
-  // Search masjids by name OR location - FIXED VERSION
-// Search by MASJID NAME - FIXED VERSION
-Future<void> searchMasjids(String query) async {
-  if (query.isEmpty) {
-    setState(() {
-      masjids = [];
-      searchStatus = 'Enter a masjid name';
-    });
-    return;
-  }
-
-  setState(() {
-    isLoading = true;
-    masjids = [];
-    searchStatus = 'Searching for "$query"...';
-    isSearching = true;
-  });
-
-  try {
-    // 🔹 Add a User-Agent so Nominatim doesn’t block you
-    final response = await http.get(
-      Uri.parse(
-        'https://nominatim.openstreetmap.org/search?format=json&q=${Uri.encodeComponent(query)}&limit=50',
-      ),
-      headers: {
-        'User-Agent': 'MasjidFinderApp/1.0', // <— You can name this anything
-      },
-    );
-
-    print('Response status: ${response.statusCode}');
-    print('Response body: ${response.body}');
-
-    if (response.statusCode == 200) {
-      final data = json.decode(response.body) as List;
-
-      final List<Map<String, dynamic>> foundMasjids = [];
-
-      for (final place in data) {
-        final name = place['display_name']?.toString() ?? '';
-        final lat = place['lat']?.toString();
-        final lon = place['lon']?.toString();
-
-        if (lat != null && lon != null) {
-          foundMasjids.add({
-            'id': place['place_id']?.toString() ?? 'search_${foundMasjids.length}',
-            'name': name.split(',').first.trim(),
-            'address': name,
-            'phone': 'Contact for details',
-            'email': 'Not available',
-            'latitude': double.parse(lat),
-            'longitude': double.parse(lon),
-            'prayerTimes': _generatePrayerTimes(),
-            'events': _generateSampleEvents(),
-            'announcements': _generateSampleAnnouncements(),
-          });
-        }
-      }
-
+  Future<void> searchMasjids(String query) async {
+    if (query.isEmpty) {
       setState(() {
-        masjids = foundMasjids;
-        searchStatus = foundMasjids.isEmpty
-            ? 'No results found for "$query"'
-            : 'Found ${foundMasjids.length} results for "$query"';
+        masjids = [];
+        searchStatus = 'Enter a masjid name';
       });
-    } else {
+      return;
+    }
+
+    setState(() {
+      isLoading = true;
+      masjids = [];
+      searchStatus = 'Searching for "$query"...';
+      isSearching = true;
+    });
+
+    try {
+      final response = await http.get(
+        Uri.parse(
+          'https://nominatim.openstreetmap.org/search?format=json&q=${Uri.encodeComponent(query)}&limit=50',
+        ),
+        headers: {
+          'User-Agent': 'MasjidFinderApp/1.0',
+        },
+      );
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body) as List;
+
+        final List<Map<String, dynamic>> foundMasjids = [];
+
+        for (final place in data) {
+          final name = place['display_name']?.toString() ?? '';
+          final lat = place['lat']?.toString();
+          final lon = place['lon']?.toString();
+
+          if (lat != null && lon != null) {
+            foundMasjids.add({
+              'id': place['place_id']?.toString() ?? 'search_${foundMasjids.length}',
+              'name': name.split(',').first.trim(),
+              'address': name,
+              'phone': 'Contact for details',
+              'email': 'Not available',
+              'latitude': double.parse(lat),
+              'longitude': double.parse(lon),
+              'prayerTimes': _generatePrayerTimes(),
+              'events': _generateSampleEvents(),
+              'announcements': _generateSampleAnnouncements(),
+            });
+          }
+        }
+
+        setState(() {
+          masjids = foundMasjids;
+          searchStatus = foundMasjids.isEmpty
+              ? 'No results found for "$query"'
+              : 'Found ${foundMasjids.length} results for "$query"';
+        });
+      } else {
+        setState(() {
+          searchStatus = 'Search failed (HTTP ${response.statusCode})';
+          masjids = [];
+        });
+      }
+    } catch (e) {
       setState(() {
-        searchStatus = 'Search failed (HTTP ${response.statusCode})';
+        searchStatus = 'Search error: $e';
         masjids = [];
       });
+    } finally {
+      setState(() {
+        isLoading = false;
+      });
     }
-  } catch (e) {
-    setState(() {
-      searchStatus = 'Search error: $e';
-      masjids = [];
-    });
-  } finally {
-    setState(() {
-      isLoading = false;
-    });
   }
-}
 
-bool _looksLikeMasjid(String name) { final lowerName = name.toLowerCase(); return lowerName.contains('mosque') || lowerName.contains('masjid') || lowerName.contains('islamic') || lowerName.contains('islam') || lowerName.contains('muslim') || lowerName.contains('مسجد') || lowerName.contains('جامع') || lowerName.contains('jama') || lowerName.contains('musalla'); }
-  // Check location permissions
   Future<bool> _checkLocationPermission() async {
     try {
       var status = await Permission.location.status;
@@ -161,8 +154,7 @@ bool _looksLikeMasjid(String name) { final lowerName = name.toLowerCase(); retur
       return false;
     }
   }
-String _getMasjidName(String displayName) { final parts = displayName.split(','); if (parts.isNotEmpty) { return parts[0].trim(); } return 'Masjid'; }
-  // Find nearby masjids
+
   Future<void> findNearbyMasjids() async {
     setState(() {
       isLoading = true;
@@ -203,7 +195,6 @@ String _getMasjidName(String displayName) { final parts = displayName.split(',')
       });
       
     } catch (e) {
-      print('Location error: $e');
       setState(() {
         userLocation = 'Location access failed';
         searchStatus = 'Unable to search for masjids. Please enable location.';
@@ -216,7 +207,6 @@ String _getMasjidName(String displayName) { final parts = displayName.split(',')
     }
   }
 
-  // Get nearby masjids
   Future<List<Map<String, dynamic>>> _getRealNearbyMasjids(double lat, double lng) async {
     try {
       List<Map<String, dynamic>> masjids = await _getFromOpenStreetMap(lat, lng);
@@ -330,7 +320,7 @@ String _getMasjidName(String displayName) { final parts = displayName.split(',')
   Map<String, dynamic> _generatePrayerTimes() {
     return {
       'fajr': {'adhan': '04:42', 'iqamah': '05:12'},
-      'shurug': {'adhan': '06:15', 'iqamah': '--'},
+      'shuruq': {'adhan': '06:15', 'iqamah': '--'}, // FIXED: 'shurug' to 'shuruq'
       'dhuhr': {'adhan': '12:59', 'iqamah': '13:09'},
       'asr': {'adhan': '16:43', 'iqamah': '16:58'},
       'maghrib': {'adhan': '19:44', 'iqamah': '19:54'},
@@ -400,7 +390,6 @@ String _getMasjidName(String displayName) { final parts = displayName.split(',')
         padding: const EdgeInsets.all(16.0),
         child: Column(
           children: [
-            // Search Bar
             Row(
               children: [
                 Expanded(
@@ -450,7 +439,7 @@ String _getMasjidName(String displayName) { final parts = displayName.split(',')
                 child: Text(
                   searchStatus,
                   style: TextStyle(
-                    color: masjids.isEmpty ? Colors.orange : Color(0xFF2196F3),
+                    color: masjids.isEmpty ? Colors.orange : const Color(0xFF2196F3),
                     fontSize: 12,
                   ),
                   textAlign: TextAlign.center,
@@ -538,7 +527,7 @@ class MasjidCard extends StatelessWidget {
           padding: const EdgeInsets.all(16.0),
           child: Row(
             children: [
-              Icon(Icons.mosque, color: Color(0xFF2196F3), size: 40),
+              const Icon(Icons.mosque, color: Color(0xFF2196F3), size: 40),
               const SizedBox(width: 16),
               Expanded(
                 child: Column(
@@ -560,12 +549,12 @@ class MasjidCard extends StatelessWidget {
                     const SizedBox(height: 4),
                     Text(
                       '${masjid['events']?.length ?? 0} events • ${masjid['announcements']?.length ?? 0} announcements',
-                      style: TextStyle(color: Color(0xFF2196F3), fontSize: 12),
+                      style: const TextStyle(color: Color(0xFF2196F3), fontSize: 12),
                     ),
                   ],
                 ),
               ),
-              Icon(Icons.arrow_forward_ios, color: Colors.grey, size: 16),
+              const Icon(Icons.arrow_forward_ios, color: Colors.grey, size: 16),
             ],
           ),
         ),
@@ -604,17 +593,52 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
     super.dispose();
   }
 
+  Future<void> _openMaps() async {
+    final dynamic lat = widget.masjid['latitude'] ?? widget.masjid['lat'];
+    final dynamic lon = widget.masjid['longitude'] ?? widget.masjid['lng'] ?? widget.masjid['lon'];
+
+    if (lat == null || lon == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Location not available for this Masjid')),
+      );
+      return;
+    }
+
+    final dest = '$lat,$lon';
+    final googleMapsUrl = 'https://www.google.com/maps/dir/?api=1&destination=$dest';
+    final googleMapsUri = Uri.parse(googleMapsUrl);
+
+    try {
+      if (kIsWeb) {
+        // On web (Netlify) open in a new tab. Use launchUrl with a
+        // webOnlyWindowName so browsers open a new tab.
+        await launchUrl(googleMapsUri, webOnlyWindowName: '_blank');
+        return;
+      }
+
+      if (await canLaunchUrl(googleMapsUri)) {
+        await launchUrl(googleMapsUri, mode: LaunchMode.externalApplication);
+      } else {
+        await launchUrl(googleMapsUri);
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to open maps: $e')),
+      );
+    }
+  }
+
   void _updateCurrentDateTime() {
     final now = DateTime.now();
     
     const List<String> weekdays = [
-      'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'
+      'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'
     ];
     const List<String> months = [
       'January', 'February', 'March', 'April', 'May', 'June',
       'July', 'August', 'September', 'October', 'November', 'December'
     ];
-    final weekdayStr = weekdays[now.weekday];
+    final weekdayStr = weekdays[now.weekday - 1];
     final monthStr = months[now.month - 1];
     currentDate = '$weekdayStr, $monthStr ${now.day}, ${now.year}';
     
@@ -628,9 +652,9 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
 
   String _getHijriDate(DateTime gregorianDate) {
     final DateTime referenceDate = DateTime(2025, 10, 31);
-    final int referenceHijriDay = 9;
-    final int referenceHijriMonth = 5;
-    final int referenceHijriYear = 1447;
+    const int referenceHijriDay = 9;
+    const int referenceHijriMonth = 5;
+    const int referenceHijriYear = 1447;
     
     final int daysDifference = gregorianDate.difference(referenceDate).inDays;
     
@@ -690,25 +714,32 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
 
   void _calculateNextPrayer() {
     final now = DateTime.now();
-    final prayerTimes = widget.masjid['prayerTimes'] as Map<String, dynamic>;
-    
+    final dynamic rawPrayerTimes = widget.masjid['prayerTimes'];
+    final Map<String, dynamic> prayerTimes = (rawPrayerTimes is Map)
+        ? Map<String, dynamic>.from(rawPrayerTimes)
+        : <String, dynamic>{};
+
     final Map<String, DateTime> prayerTimeMap = {};
-    
+
     prayerTimes.forEach((prayer, times) {
-      if (times['adhan'] != '--') {
-        final timeParts = times['adhan'].split(':');
-        if (timeParts.length == 2) {
-          final hour = int.parse(timeParts[0]);
-          final minute = int.parse(timeParts[1]);
-          
-          DateTime prayerTime = DateTime(now.year, now.month, now.day, hour, minute);
-          
-          if (prayerTime.isBefore(now)) {
-            prayerTime = prayerTime.add(const Duration(days: 1));
+      try {
+        final String adhanStr = (times is Map && times['adhan'] != null) ? times['adhan'].toString() : '--';
+        if (adhanStr != '--') {
+          final timeParts = adhanStr.split(':');
+          if (timeParts.length == 2) {
+            final hour = int.tryParse(timeParts[0]);
+            final minute = int.tryParse(timeParts[1]);
+            if (hour != null && minute != null) {
+              DateTime prayerTime = DateTime(now.year, now.month, now.day, hour, minute);
+              if (prayerTime.isBefore(now)) {
+                prayerTime = prayerTime.add(const Duration(days: 1));
+              }
+              prayerTimeMap[prayer] = prayerTime;
+            }
           }
-          
-          prayerTimeMap[prayer] = prayerTime;
         }
+      } catch (e) {
+        // ignore parsing errors
       }
     });
     
@@ -751,332 +782,377 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final prayerTimes = widget.masjid['prayerTimes'] as Map<String, dynamic>;
-    final events = widget.masjid['events'] as List<dynamic>? ?? [];
-    final announcements = widget.masjid['announcements'] as List<dynamic>? ?? [];
+    final String name = widget.masjid['name']?.toString() ?? 'Masjid';
+    final String address = widget.masjid['address']?.toString() ?? 'Location available';
+    final String phone = widget.masjid['phone']?.toString() ?? 'Not available';
+    final String email = widget.masjid['email']?.toString() ?? 'Not available';
+
+    final dynamic rawPrayerTimes = widget.masjid['prayerTimes'];
+    final Map<String, dynamic> prayerTimes = (rawPrayerTimes is Map)
+        ? Map<String, dynamic>.from(rawPrayerTimes)
+        : <String, dynamic>{
+            'fajr': {'adhan': '--', 'iqamah': '--'},
+            'shuruq': {'adhan': '--', 'iqamah': '--'}, // FIXED: 'shurug' to 'shuruq'
+            'dhuhr': {'adhan': '--', 'iqamah': '--'},
+            'asr': {'adhan': '--', 'iqamah': '--'},
+            'maghrib': {'adhan': '--', 'iqamah': '--'},
+            'isha': {'adhan': '--', 'iqamah': '--'},
+          };
+
+    final dynamic rawEvents = widget.masjid['events'];
+    final List<dynamic> events = (rawEvents is List) ? List<dynamic>.from(rawEvents) : <dynamic>[];
+
+    final dynamic rawAnnouncements = widget.masjid['announcements'];
+    final List<dynamic> announcements = (rawAnnouncements is List) ? List<dynamic>.from(rawAnnouncements) : <dynamic>[];
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.masjid['name']),
+        title: Text(name),
         backgroundColor: const Color(0xFF2196F3),
         foregroundColor: Colors.white,
       ),
       backgroundColor: const Color(0xFFF5F5F5),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Card(
-              elevation: 4,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(20),
-                decoration: BoxDecoration(
-                  gradient: const LinearGradient(
-                    colors: [Color(0xFF2196F3), Color(0xFF1976D2)],
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                  ),
+      body: SafeArea( // ADDED: SafeArea to prevent layout issues
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Card(
+                elevation: 4,
+                shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(16),
                 ),
-                child: Column(
-                  children: [
-                    Text(
-                      'The Adhan of $currentPrayerName is in',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 18,
-                        fontWeight: FontWeight.w500,
-                      ),
-                      textAlign: TextAlign.center,
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(20),
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      colors: [Color(0xFF2196F3), Color(0xFF1976D2)],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
                     ),
-                    const SizedBox(height: 10),
-                    Text(
-                      countdownText,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 36,
-                        fontWeight: FontWeight.bold,
-                        fontFamily: 'monospace',
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    Text(
-                      '$currentDate\n$hijriDate',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 14,
-                      ),
-                      textAlign: TextAlign.center,
-                    ),
-                    const SizedBox(height: 5),
-                    Text(
-                      'Current Time: $currentTime',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 12,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-
-            const SizedBox(height: 24),
-
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      widget.masjid['name'],
-                      style: const TextStyle(
-                        fontSize: 24,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.black87,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      widget.masjid['address'],
-                      style: const TextStyle(color: Colors.grey, fontSize: 16),
-                    ),
-                    if (widget.masjid['phone'] != null && widget.masjid['phone'] != 'Not available') ...[
-                      const SizedBox(height: 8),
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Column(
+                    children: [
                       Text(
-                        '📞 ${widget.masjid['phone']}',
-                        style: const TextStyle(color: Colors.grey),
+                        'The Adhan of $currentPrayerName is in',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 18,
+                          fontWeight: FontWeight.w500,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        countdownText,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 36,
+                          fontWeight: FontWeight.bold,
+                          fontFamily: 'monospace',
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        '$currentDate\n$hijriDate',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 5),
+                      Text(
+                        'Current Time: $currentTime',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                        ),
                       ),
                     ],
-                    if (widget.masjid['email'] != null && widget.masjid['email'] != 'Not available') ...[
-                      const SizedBox(height: 4),
+                  ),
+                ),
+              ),
+
+              const SizedBox(height: 24),
+
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
                       Text(
-                        '📧 ${widget.masjid['email']}',
-                        style: const TextStyle(color: Colors.grey),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-            ),
-
-            const SizedBox(height: 24),
-
-            const Text(
-              'Prayer Times',
-              style: TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.bold,
-                color: Colors.black87,
-              ),
-            ),
-            const SizedBox(height: 12),
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 16.0),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          const Expanded(
-                            child: Text(
-                              'PRAYER',
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold,
-                                color: Colors.black87,
-                              ),
-                            ),
-                          ),
-                          const Expanded(
-                            child: Text(
-                              'ADHAN',
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold,
-                                color: Colors.black87,
-                              ),
-                              textAlign: TextAlign.center,
-                            ),
-                          ),
-                          const Expanded(
-                            child: Text(
-                              'IQAMAH',
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold,
-                                color: Color(0xFF2196F3),
-                              ),
-                              textAlign: TextAlign.center,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    _buildPrayerRow('Fajr', prayerTimes['fajr'], currentPrayerName),
-                    _buildDivider(),
-                    _buildPrayerRow('Shuruq', prayerTimes['shuruq'], currentPrayerName),
-                    _buildDivider(),
-                    _buildPrayerRow('Dhuhr', prayerTimes['dhuhr'], currentPrayerName),
-                    _buildDivider(),
-                    _buildPrayerRow('Asr', prayerTimes['asr'], currentPrayerName),
-                    _buildDivider(),
-                    _buildPrayerRow('Maghrib', prayerTimes['maghrib'], currentPrayerName),
-                    _buildDivider(),
-                    _buildPrayerRow('Isha', prayerTimes['isha'], currentPrayerName),
-                  ],
-                ),
-              ),
-            ),
-
-            const SizedBox(height: 24),
-
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Row(
-                  children: [
-                    Icon(Icons.calendar_today, color: Color(0xFF2196F3)),
-                    const SizedBox(width: 12),
-                    const Expanded(
-                      child: Text(
-                        'Jummah Prayer',
-                        style: TextStyle(
-                          fontSize: 16,
+                        name,
+                        style: const TextStyle(
+                          fontSize: 24,
                           fontWeight: FontWeight.bold,
                           color: Colors.black87,
                         ),
                       ),
-                    ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                      decoration: BoxDecoration(
-                        color: Color(0xFF2196F3),
-                        borderRadius: BorderRadius.circular(8),
+                      const SizedBox(height: 8),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  address,
+                                  style: const TextStyle(color: Colors.grey, fontSize: 16),
+                                ),
+                                if (phone != 'Not available') ...[
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    '📞 $phone',
+                                    style: const TextStyle(color: Colors.grey),
+                                  ),
+                                ],
+                                if (email != 'Not available') ...[
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    '📧 $email',
+                                    style: const TextStyle(color: Colors.grey),
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          ElevatedButton.icon(
+                            onPressed: _openMaps,
+                            icon: const Icon(Icons.directions),
+                            label: const Text('Go to Masjid'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF1976D2),
+                            ),
+                          ),
+                        ],
                       ),
-                      child: const Text(
-                        '13:30',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
+                    ],
+                  ),
+                ),
+              ),
+
+              const SizedBox(height: 24),
+
+              const Text(
+                'Prayer Times',
+                style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.black87,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    children: [
+                      const Padding(
+                        padding: EdgeInsets.only(bottom: 16.0),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Expanded(
+                              child: Text(
+                                'PRAYER',
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.black87,
+                                ),
+                              ),
+                            ),
+                            Expanded(
+                              child: Text(
+                                'ADHAN',
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.black87,
+                                ),
+                                textAlign: TextAlign.center,
+                              ),
+                            ),
+                            Expanded(
+                              child: Text(
+                                'IQAMAH',
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                  color: Color(0xFF2196F3),
+                                ),
+                                textAlign: TextAlign.center,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
+                      _buildPrayerRow('Fajr', prayerTimes['fajr'], currentPrayerName),
+                      _buildDivider(),
+                      _buildPrayerRow('Shuruq', prayerTimes['shuruq'], currentPrayerName), // FIXED: 'shurug' to 'shuruq'
+                      _buildDivider(),
+                      _buildPrayerRow('Dhuhr', prayerTimes['dhuhr'], currentPrayerName),
+                      _buildDivider(),
+                      _buildPrayerRow('Asr', prayerTimes['asr'], currentPrayerName),
+                      _buildDivider(),
+                      _buildPrayerRow('Maghrib', prayerTimes['maghrib'], currentPrayerName),
+                      _buildDivider(),
+                      _buildPrayerRow('Isha', prayerTimes['isha'], currentPrayerName),
+                    ],
+                  ),
+                ),
+              ),
+
+              const SizedBox(height: 24),
+
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.calendar_today, color: Color(0xFF2196F3)),
+                      const SizedBox(width: 12),
+                      const Expanded(
+                        child: Text(
+                          'Jummah Prayer',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.black87,
+                          ),
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF2196F3),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Text(
+                          '13:30',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
+              const SizedBox(height: 24),
+
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'Upcoming Events',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.black87,
                     ),
-                  ],
-                ),
+                  ),
+                  Text(
+                    '${events.length} events',
+                    style: const TextStyle(color: Color(0xFF2196F3)),
+                  ),
+                ],
               ),
-            ),
+              const SizedBox(height: 12),
 
-            const SizedBox(height: 24),
-
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text(
-                  'Upcoming Events',
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.black87,
+              if (events.isEmpty)
+                const Card(
+                  child: Padding(
+                    padding: EdgeInsets.all(16.0),
+                    child: Text(
+                      'No upcoming events',
+                      style: TextStyle(color: Colors.grey),
+                      textAlign: TextAlign.center,
+                    ),
                   ),
+                )
+              else
+                Column(
+                  children: events.map((event) => _buildEventCard(event)).toList(),
                 ),
-                Text(
-                  '${events.length} events',
-                  style: TextStyle(color: Color(0xFF2196F3)),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
 
-            if (events.isEmpty)
-              const Card(
-                child: Padding(
-                  padding: EdgeInsets.all(16.0),
-                  child: Text(
-                    'No upcoming events',
-                    style: TextStyle(color: Colors.grey),
-                    textAlign: TextAlign.center,
+              const SizedBox(height: 24),
+
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'Announcements',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.black87,
+                    ),
                   ),
+                  Text(
+                    '${announcements.length} announcements',
+                    style: const TextStyle(color: Color(0xFF2196F3)),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+
+              if (announcements.isEmpty)
+                const Card(
+                  child: Padding(
+                    padding: EdgeInsets.all(16.0),
+                    child: Text(
+                      'No announcements',
+                      style: TextStyle(color: Colors.grey),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                )
+              else
+                Column(
+                  children: announcements.map((announcement) => _buildAnnouncementCard(announcement)).toList(),
                 ),
-              )
-            else
-              Column(
-                children: events.map((event) => _buildEventCard(event)).toList(),
+
+              const SizedBox(height: 12),
+
+              ElevatedButton(
+                onPressed: () {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Now following ${widget.masjid['name']}'),
+                      backgroundColor: const Color(0xFF2196F3),
+                    ),
+                  );
+                },
+                style: ElevatedButton.styleFrom(
+                  minimumSize: const Size(double.infinity, 50),
+                ),
+                child: const Text('Follow Masjid'),
               ),
 
-            const SizedBox(height: 24),
-
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text(
-                  'Announcements',
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.black87,
-                  ),
-                ),
-                Text(
-                  '${announcements.length} announcements',
-                  style: TextStyle(color: Color(0xFF2196F3)),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-
-            if (announcements.isEmpty)
-              const Card(
-                child: Padding(
-                  padding: EdgeInsets.all(16.0),
-                  child: Text(
-                    'No announcements',
-                    style: TextStyle(color: Colors.grey),
-                    textAlign: TextAlign.center,
-                  ),
-                ),
-              )
-            else
-              Column(
-                children: announcements.map((announcement) => _buildAnnouncementCard(announcement)).toList(),
-              ),
-
-            const SizedBox(height: 24),
-
-            ElevatedButton(
-              onPressed: () {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text('Now following ${widget.masjid['name']}'),
-                    backgroundColor: const Color(0xFF2196F3),
-                  ),
-                );
-              },
-              style: ElevatedButton.styleFrom(
-                minimumSize: const Size(double.infinity, 50),
-              ),
-              child: const Text('Follow Masjid'),
-            ),
-
-            const SizedBox(height: 20),
-          ],
+              const SizedBox(height: 20),
+            ],
+          ),
         ),
       ),
     );
   }
 
-  Widget _buildPrayerRow(String prayer, Map<String, dynamic> times, String currentPrayer) {
+  Widget _buildPrayerRow(String prayer, dynamic times, String currentPrayer) {
     final isNextPrayer = prayer.toLowerCase() == currentPrayer.toLowerCase();
-    
+
+    final String adhanStr = (times is Map && times['adhan'] != null) ? times['adhan'].toString() : '--';
+    final String iqamahStr = (times is Map && times['iqamah'] != null) ? times['iqamah'].toString() : '--';
+
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 12),
       child: Row(
@@ -1086,14 +1162,14 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
             child: Row(
               children: [
                 if (isNextPrayer)
-                  Icon(Icons.notifications_active, color: Color(0xFF2196F3), size: 16),
+                  const Icon(Icons.notifications_active, color: Color(0xFF2196F3), size: 16),
                 if (isNextPrayer) const SizedBox(width: 4),
                 Text(
                   prayer,
                   style: TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.w500,
-                    color: isNextPrayer ? Color(0xFF2196F3) : Colors.black87,
+                    color: isNextPrayer ? const Color(0xFF2196F3) : Colors.black87,
                   ),
                 ),
               ],
@@ -1101,9 +1177,9 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
           ),
           Expanded(
             child: Text(
-              times['adhan'],
+              adhanStr,
               style: TextStyle(
-                color: isNextPrayer ? Color(0xFF2196F3) : Colors.grey,
+                color: isNextPrayer ? const Color(0xFF2196F3) : Colors.grey,
                 fontSize: 16,
                 fontWeight: isNextPrayer ? FontWeight.bold : FontWeight.normal,
               ),
@@ -1112,9 +1188,9 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
           ),
           Expanded(
             child: Text(
-              times['iqamah'],
+              iqamahStr,
               style: TextStyle(
-                color: isNextPrayer ? Color(0xFF2196F3) : Color(0xFF2196F3),
+                color: isNextPrayer ? const Color(0xFF2196F3) : const Color(0xFF2196F3),
                 fontSize: 16,
                 fontWeight: isNextPrayer ? FontWeight.bold : FontWeight.normal,
               ),
@@ -1143,7 +1219,7 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
           children: [
             Row(
               children: [
-                Icon(Icons.event, color: Color(0xFF2196F3)),
+                const Icon(Icons.event, color: Color(0xFF2196F3)),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
@@ -1165,18 +1241,18 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
             const SizedBox(height: 8),
             Row(
               children: [
-                Icon(Icons.calendar_today, size: 16, color: Color(0xFF2196F3)),
+                const Icon(Icons.calendar_today, size: 16, color: Color(0xFF2196F3)),
                 const SizedBox(width: 4),
                 Text(
                   event['date'],
-                  style: TextStyle(fontSize: 14, color: Color(0xFF2196F3)),
+                  style: const TextStyle(fontSize: 14, color: Color(0xFF2196F3)),
                 ),
                 const SizedBox(width: 16),
-                Icon(Icons.access_time, size: 16, color: Color(0xFF2196F3)),
+                const Icon(Icons.access_time, size: 16, color: Color(0xFF2196F3)),
                 const SizedBox(width: 4),
                 Text(
                   event['time'],
-                  style: TextStyle(fontSize: 14, color: Color(0xFF2196F3)),
+                  style: const TextStyle(fontSize: 14, color: Color(0xFF2196F3)),
                 ),
               ],
             ),
@@ -1191,7 +1267,7 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
     
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
-      color: isImportant ? Color(0xFFFFEBEE) : null,
+      color: isImportant ? const Color(0xFFFFEBEE) : null,
       child: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
@@ -1200,7 +1276,7 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
             Row(
               children: [
                 if (isImportant)
-                  Icon(Icons.warning, color: Color(0xFFF44336)),
+                  const Icon(Icons.warning, color: Color(0xFFF44336)),
                 if (isImportant) const SizedBox(width: 8),
                 Expanded(
                   child: Text(
@@ -1208,7 +1284,7 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
                     style: TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.bold,
-                      color: isImportant ? Color(0xFFF44336) : Colors.black87,
+                      color: isImportant ? const Color(0xFFF44336) : Colors.black87,
                     ),
                   ),
                 ),
@@ -1218,7 +1294,7 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
             Text(
               announcement['message'],
               style: TextStyle(
-                color: isImportant ? Color(0xFFF44336) : Colors.grey,
+                color: isImportant ? const Color(0xFFF44336) : Colors.grey,
               ),
             ),
             const SizedBox(height: 8),
@@ -1226,13 +1302,13 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
               children: [
                 Icon(Icons.calendar_today, 
                     size: 14, 
-                    color: isImportant ? Color(0xFFF44336) : Color(0xFF2196F3)),
+                    color: isImportant ? const Color(0xFFF44336) : const Color(0xFF2196F3)),
                 const SizedBox(width: 4),
                 Text(
                   announcement['date'],
                   style: TextStyle(
                     fontSize: 12,
-                    color: isImportant ? Color(0xFFF44336) : Color(0xFF2196F3),
+                    color: isImportant ? const Color(0xFFF44336) : const Color(0xFF2196F3),
                   ),
                 ),
               ],

@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
-import 'screens/tv_display_screen.dart';
+// Conditionally load the real TV screen only on web. On mobile platforms we
+// use a small stub to avoid importing web-only packages (which can break
+// Android/iOS builds).
+import 'screens/tv_display_screen_stub.dart'
+  if (dart.library.html) 'screens/tv_display_screen.dart';
 import 'screens/mobile_home_screen.dart';
-import 'package:flutter_web_plugins/flutter_web_plugins.dart';
-
 void main() {
-  setUrlStrategy(PathUrlStrategy()); 
   runApp(const MyApp());
 }
 
@@ -36,7 +37,12 @@ class MyApp extends StatelessWidget {
           style: ElevatedButton.styleFrom(
             backgroundColor: const Color(0xFF2196F3),
             foregroundColor: Colors.white,
-            minimumSize: const Size(double.infinity, 50),
+            // Avoid forcing an infinite minimum width globally. Some
+            // buttons live inside Rows (e.g. the Masjid details contact
+            // row) and an infinite min width causes a layout crash on
+            // constrained platforms. Use a zero width min and specify
+            // full-width buttons locally where required.
+            minimumSize: const Size(0, 50),
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(8),
             ),
@@ -60,9 +66,9 @@ class ResponsiveLauncher extends StatelessWidget {
           // TV Mode
           return TVDisplayScreen(
            announcements: [
-            {'imagePath': 'assets/images/WhatsApp Image 2025-10-31 at 9.48.01 PM (1).jpeg'},
-            {'imagePath': 'assets/images/WhatsApp Image 2025-10-31 at 9.48.01 PM.jpeg'},
-            {'imagePath': 'assets/images/Untitled design (1).png'},
+            {'imagePath': 'https://i.ibb.co.com/FLKKMksq/Whats-App-Image-2025-10-31-at-9-48-01-PM-1.jpg'},
+            {'imagePath': 'https://i.ibb.co.com/CKkgQ3tc/Whats-App-Image-2025-10-31-at-9-48-01-PM.jpg'},
+            {'imagePath': 'https://i.ibb.co.com/mrZysvjs/Untitled-design-1.png'},
              ],
 
             prayerTimes: {

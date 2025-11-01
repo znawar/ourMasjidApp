@@ -1,8 +1,16 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:carousel_slider/carousel_slider.dart';
-import 'package:wakelock/wakelock.dart';
 import 'package:intl/intl.dart';  
+
+// Fallback no-op Wakelock implementation in case the wakelock package is not available.
+// This prevents a missing package import from breaking compilation; if you later add
+// the wakelock (or wakelock_plus) package to pubspec.yaml, you can remove this shim
+// and import the real package instead.
+class Wakelock {
+  static Future<void> enable() async {}
+  static Future<void> disable() async {}
+}
 
 class TVDisplayScreen extends StatefulWidget {
   final List<Map<String, String>> announcements;
@@ -72,7 +80,7 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
   DateTime now = DateTime.now();
   String nextPrayerName = '';
   Duration nextPrayerCountdown = Duration.zero;
-  int _carouselIndex = 0;
+  // Carousel state (original CarouselSlider will be used on web builds)
 
   @override
   void initState() {
@@ -80,6 +88,7 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
     // Wakelock may throw on some web/platform implementations (e.g. wakelock_web)
     // so call it and swallow async errors to avoid crashing the UI.
     Wakelock.enable().catchError((_) {});
+  // no page controller needed when using CarouselSlider
     _startClock();
     _calculateNextPrayer();
   }
@@ -88,6 +97,7 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
   void dispose() {
     _timer?.cancel();
     Wakelock.disable();
+  // nothing to dispose for carousel here
     super.dispose();
   }
 
@@ -96,6 +106,7 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
       setState(() {
         now = DateTime.now();
         _calculateNextPrayer();
+        // Keep only clock/timer updates here; carousel auto-play is handled by CarouselSlider options on web
       });
     });
   }
@@ -219,9 +230,9 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
                                             style: TextStyle(color: Colors.grey[600], fontSize: 20),
                                           ),
                                         )
-                                      : CarouselSlider.builder(
-                                          itemCount: widget.announcements.length,
-                                          itemBuilder: (context, index, realIndex) {
+                    : CarouselSlider.builder(
+                      itemCount: widget.announcements.length,
+                      itemBuilder: (context, index, realIndex) {
                                             final item = widget.announcements[index];
                                             return Container(
                                               margin: const EdgeInsets.symmetric(horizontal: 4),
@@ -229,7 +240,7 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
                                                 borderRadius: BorderRadius.circular(16),
                                                 child: Image.network(
                                                   item['imagePath'] ?? '',
-                                                  fit: BoxFit.contain, // No cropping
+                                                  fit: BoxFit.contain,
                                                   width: double.infinity,
                                                   errorBuilder: (context, error, stackTrace) {
                                                     return Container(
