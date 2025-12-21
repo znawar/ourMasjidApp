@@ -5,21 +5,27 @@ import 'package:flutter/material.dart';
 /// import web-specific packages. This lightweight stub prevents mobile
 /// (Android/iOS) builds from pulling web-only dependencies.
 class TVDisplayScreen extends StatelessWidget {
-  final List<Map<String, String>> announcements;
-  final Map<String, Map<String, String>> prayerTimes;
+  final String? masjidId;
+  final List<Map<String, String>>? announcements;
+  final Map<String, Map<String, String>>? prayerTimes;
 
-  const TVDisplayScreen({super.key, required this.announcements, required this.prayerTimes});
+  const TVDisplayScreen({
+    super.key,
+    this.masjidId,
+    this.announcements,
+    this.prayerTimes,
+  });
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Our Masjid App')),
-      body: Center(
+      body: const Center(
         child: Padding(
-          padding: const EdgeInsets.all(16.0),
+          padding: EdgeInsets.all(16.0),
           child: Column(
             mainAxisSize: MainAxisSize.min,
-            children: const [
+            children: [
               Icon(Icons.tv, size: 64, color: Colors.grey),
               SizedBox(height: 12),
               Text(

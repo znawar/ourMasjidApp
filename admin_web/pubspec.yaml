@@ -1,0 +1,40 @@
+name: admin_web
+description: Our Masjid App - Admin Dashboard for managing masjid operations
+version: 1.0.0
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  
+  # Core packages
+  firebase_core: ^3.4.2
+  firebase_auth: ^5.3.1
+  cloud_firestore: ^5.0.0
+  
+  # Prayer times
+  http: ^1.1.0
+  intl: ^0.19.0
+  
+  # State management
+  provider: ^6.1.1
+  
+  # UI
+  image_picker_web: ^3.0.1
+  shared_preferences: ^2.2.2
+  google_fonts: ^6.3.3
+  
+  # Utils
+  uuid: ^4.4.0
+  geolocator: ^11.0.1  # Optional: for getting location
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - .env

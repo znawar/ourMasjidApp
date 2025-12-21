@@ -65,11 +65,11 @@ class MasjidService {
 
   static Map<String, dynamic> _getDefaultPrayerTimes() {
     return {
-      'fajr': {'azan': '5:00 AM', 'iqama': '5:30 AM'},
-      'dhuhr': {'azan': '12:30 PM', 'iqama': '1:00 PM'},
-      'asr': {'azan': '4:00 PM', 'iqama': '4:30 PM'},
-      'maghrib': {'azan': '6:30 PM', 'iqama': '6:35 PM'},
-      'isha': {'azan': '8:00 PM', 'iqama': '8:30 PM'},
+      'fajr': {'adhan': '05:00', 'iqamah': '05:30'},
+      'dhuhr': {'adhan': '12:30', 'iqamah': '13:00'},
+      'asr': {'adhan': '16:00', 'iqamah': '16:30'},
+      'maghrib': {'adhan': '18:30', 'iqamah': '18:35'},
+      'isha': {'adhan': '20:00', 'iqamah': '20:30'},
     };
   }
 

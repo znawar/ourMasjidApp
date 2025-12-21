@@ -12,6 +12,10 @@ dependencies:
   flutter:
     sdk: flutter
   
+  # Firebase
+  firebase_core: ^3.1.0
+  cloud_firestore: ^5.0.0
+  
   # Updated dependencies - FIXED VERSION
   carousel_slider: ^5.1.1
   # REMOVED: wakelock_plus - not needed for your current code
@@ -20,6 +24,9 @@ dependencies:
   http: ^1.1.0
   permission_handler: ^11.4.0  # Your current version
   url_launcher: ^6.1.10
+
+  # Persistent storage (used for TV pairing persistence)
+  shared_preferences: ^2.2.2
   
   # Add flutter_web_plugins for proper web support
   flutter_web_plugins:

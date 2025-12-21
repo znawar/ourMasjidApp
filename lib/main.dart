@@ -1,11 +1,29 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 // Conditionally load the real TV screen only on web. On mobile platforms we
 // use a small stub to avoid importing web-only packages (which can break
 // Android/iOS builds).
+// The import may be unused at runtime because we no longer auto-select the
+// TV display; keep it so the TV code remains available. Silence the
+// analyzer about an unused import.
+// ignore: unused_import
 import 'screens/tv_display_screen_stub.dart'
   if (dart.library.html) 'screens/tv_display_screen.dart';
 import 'screens/mobile_home_screen.dart';
-void main() {
+import 'package:firebase_core/firebase_core.dart';
+import 'firebase_options.dart';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  
+  try {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+  } catch (e) {
+    print('Firebase initialization error: $e');
+  }
+  
   runApp(const MyApp());
 }
 
@@ -60,30 +78,22 @@ class ResponsiveLauncher extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        if (constraints.maxWidth > 900) {
-          // TV Mode
-          return TVDisplayScreen(
-           announcements: [
-            {'imagePath': 'https://i.ibb.co.com/FLKKMksq/Whats-App-Image-2025-10-31-at-9-48-01-PM-1.jpg'},
-            {'imagePath': 'https://i.ibb.co.com/CKkgQ3tc/Whats-App-Image-2025-10-31-at-9-48-01-PM.jpg'},
-            {'imagePath': 'https://i.ibb.co.com/mrZysvjs/Untitled-design-1.png'},
-             ],
+    // Default: show the mobile HomeScreen.
+    // Web-only override: allow launching the TV display via URL params.
+    // Example:
+    //   https://YOUR_APP_URL/?mode=tv&masjidId=YOUR_MASJID_ID
+    if (kIsWeb) {
+      final params = Uri.base.queryParameters;
+      final mode = (params['mode'] ?? '').trim().toLowerCase();
+      final tvFlag = (params['tv'] ?? '').trim().toLowerCase();
 
-            prayerTimes: {
-              'Fajr': {'adhan': '05:00', 'iqamah': '05:20'},
-              'Dhuhr': {'adhan': '12:45', 'iqamah': '13:00'},
-              'Asr': {'adhan': '16:15', 'iqamah': '16:30'},
-              'Maghrib': {'adhan': '18:30', 'iqamah': '18:40'},
-              'Isha': {'adhan': '19:45', 'iqamah': '20:00'},
-            },
-          );
-        } else {
-          // Mobile Mode
-          return const HomeScreen();
-        }
-      },
-    );
+      final isTv = mode == 'tv' || mode == 'display' || tvFlag == '1' || tvFlag == 'true';
+      if (isTv) {
+        final masjidId = params['masjidId']?.trim();
+        return TVDisplayScreen(masjidId: (masjidId?.isEmpty ?? true) ? null : masjidId);
+      }
+    }
+
+    return const HomeScreen();
   }
 }

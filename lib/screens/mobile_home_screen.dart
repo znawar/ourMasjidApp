@@ -3,9 +3,11 @@ import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'dart:convert';
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 void main() {
   runApp(const MyApp());
@@ -84,6 +86,10 @@ class _HomeScreenState extends State<HomeScreen> {
     });
 
     try {
+      // First, search Firebase for matching masjids
+      List<Map<String, dynamic>> firebaseMasjids = await _searchFirebaseMasjids(query);
+      
+      // Then search OpenStreetMap for additional results
       final response = await http.get(
         Uri.parse(
           'https://nominatim.openstreetmap.org/search?format=json&q=${Uri.encodeComponent(query)}&limit=50',
@@ -97,6 +103,9 @@ class _HomeScreenState extends State<HomeScreen> {
         final data = json.decode(response.body) as List;
 
         final List<Map<String, dynamic>> foundMasjids = [];
+
+        // Add Firebase results first
+        foundMasjids.addAll(firebaseMasjids);
 
         for (final place in data) {
           final name = place['display_name']?.toString() ?? '';
@@ -115,6 +124,7 @@ class _HomeScreenState extends State<HomeScreen> {
               'prayerTimes': _generatePrayerTimes(),
               'events': _generateSampleEvents(),
               'announcements': _generateSampleAnnouncements(),
+              'source': 'openstreetmap',
             });
           }
         }
@@ -128,7 +138,7 @@ class _HomeScreenState extends State<HomeScreen> {
       } else {
         setState(() {
           searchStatus = 'Search failed (HTTP ${response.statusCode})';
-          masjids = [];
+          masjids = firebaseMasjids;
         });
       }
     } catch (e) {
@@ -140,6 +150,56 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() {
         isLoading = false;
       });
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> _searchFirebaseMasjids(String query) async {
+    try {
+      final FirebaseFirestore firestore = FirebaseFirestore.instance;
+
+      // Support both legacy `name` and admin-web `masjidName`.
+      // Firestore doesn't support OR queries directly, so do two queries and merge.
+      final QuerySnapshot byName = await firestore
+          .collection('masjids')
+          .where('name', isGreaterThanOrEqualTo: query)
+          .where('name', isLessThan: query + 'z')
+          .get();
+
+      final List<QueryDocumentSnapshot> byMasjidNameDocs = <QueryDocumentSnapshot>[];
+      try {
+        final QuerySnapshot byMasjidName = await firestore
+            .collection('masjids')
+            .where('masjidName', isGreaterThanOrEqualTo: query)
+            .where('masjidName', isLessThan: query + 'z')
+            .get();
+        byMasjidNameDocs.addAll(byMasjidName.docs);
+      } catch (_) {
+        // If the field is missing or unindexed in some environments, ignore.
+      }
+
+      final Map<String, Map<String, dynamic>> merged = {};
+      for (final doc in [...byName.docs, ...byMasjidNameDocs]) {
+        final data = doc.data() as Map<String, dynamic>;
+        final displayName = (data['name'] ?? data['masjidName'] ?? 'Unknown Masjid').toString();
+        merged[doc.id] = {
+          'id': doc.id,
+          'name': displayName,
+          'address': data['address'] ?? 'Address not available',
+          'phone': data['phone'] ?? 'Not available',
+          'email': data['email'] ?? 'Not available',
+          'latitude': data['latitude'] ?? 0.0,
+          'longitude': data['longitude'] ?? 0.0,
+          'prayerTimes': data['prayerTimes'] ?? _generatePrayerTimes(),
+          'events': data['events'] ?? [],
+          'announcements': data['announcements'] ?? [],
+          'source': 'firebase',
+        };
+      }
+
+      return merged.values.toList();
+    } catch (e) {
+      print('Firebase search error: $e');
+      return [];
     }
   }
 
@@ -209,11 +269,80 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<List<Map<String, dynamic>>> _getRealNearbyMasjids(double lat, double lng) async {
     try {
-      List<Map<String, dynamic>> masjids = await _getFromOpenStreetMap(lat, lng);
-      return masjids;
+      // Get masjids from Firebase
+      List<Map<String, dynamic>> firebaseMasjids = await _getNearbyFirebaseMasjids(lat, lng);
+      
+      // Get masjids from OpenStreetMap
+      List<Map<String, dynamic>> osmMasjids = await _getFromOpenStreetMap(lat, lng);
+      
+      // Combine results with Firebase first
+      final allMasjids = [...firebaseMasjids, ...osmMasjids];
+      return allMasjids;
     } catch (e) {
       return [];
     }
+  }
+
+  Future<List<Map<String, dynamic>>> _getNearbyFirebaseMasjids(double lat, double lng) async {
+    try {
+      final FirebaseFirestore firestore = FirebaseFirestore.instance;
+      const double radiusKm = 50;
+      
+      // Simple approach: get all masjids and filter by distance
+      final QuerySnapshot snapshot = await firestore.collection('masjids').get();
+      
+      final List<Map<String, dynamic>> results = [];
+      
+      for (final doc in snapshot.docs) {
+        final data = doc.data() as Map<String, dynamic>;
+        final masjidLat = (data['latitude'] as num?)?.toDouble() ?? 0.0;
+        final masjidLng = (data['longitude'] as num?)?.toDouble() ?? 0.0;
+        
+        final distance = _calculateDistance(lat, lng, masjidLat, masjidLng);
+        
+        if (distance <= radiusKm) {
+          results.add({
+            'id': doc.id,
+            'name': data['name'] ?? data['masjidName'] ?? 'Unknown Masjid',
+            'address': data['address'] ?? 'Address not available',
+            'phone': data['phone'] ?? 'Not available',
+            'email': data['email'] ?? 'Not available',
+            'latitude': masjidLat,
+            'longitude': masjidLng,
+            'prayerTimes': data['prayerTimes'] ?? _generatePrayerTimes(),
+            'events': data['events'] ?? [],
+            'announcements': data['announcements'] ?? [],
+            'distance': distance,
+            'source': 'firebase',
+          });
+        }
+      }
+      
+      // Sort by distance
+      results.sort((a, b) => (a['distance'] as num).compareTo(b['distance'] as num));
+      return results;
+    } catch (e) {
+      print('Firebase nearby search error: $e');
+      return [];
+    }
+  }
+
+  double _calculateDistance(double lat1, double lon1, double lat2, double lon2) {
+    const double earthRadiusKm = 6371;
+    
+    final double dLat = _toRadians(lat2 - lat1);
+    final double dLon = _toRadians(lon2 - lon1);
+    
+    final double a = (math.sin(dLat / 2) * math.sin(dLat / 2)) +
+        (math.cos(_toRadians(lat1)) * math.cos(_toRadians(lat2)) *
+            math.sin(dLon / 2) * math.sin(dLon / 2));
+    
+    final double c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
+    return earthRadiusKm * c;
+  }
+
+  double _toRadians(double degrees) {
+    return degrees * (math.pi / 180);
   }
 
   Future<List<Map<String, dynamic>>> _getFromOpenStreetMap(double lat, double lng) async {
@@ -792,7 +921,7 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
         ? Map<String, dynamic>.from(rawPrayerTimes)
         : <String, dynamic>{
             'fajr': {'adhan': '--', 'iqamah': '--'},
-            'shuruq': {'adhan': '--', 'iqamah': '--'}, // FIXED: 'shurug' to 'shuruq'
+            'shuruq': {'adhan': '--', 'iqamah': '--'}, 
             'dhuhr': {'adhan': '--', 'iqamah': '--'},
             'asr': {'adhan': '--', 'iqamah': '--'},
             'maghrib': {'adhan': '--', 'iqamah': '--'},
