@@ -118,27 +118,34 @@ class AuthProvider with ChangeNotifier {
         final credential = await FirebaseAuth.instance
             .signInWithEmailAndPassword(email: email, password: password);
 
-        await _loadFromFirebaseUser(credential.user!);
+        final user = credential.user;
+        if (user == null) {
+          throw Exception('Authentication failed');
+        }
 
-        // If masjidName was provided and differs, update Firestore doc lazily
-        if (masjidName.isNotEmpty && masjidName != _masjidName && userId != null) {
-          try {
-            await FirebaseFirestore.instance.collection('masjids').doc(userId).update({
-              'masjidName': masjidName,
-              'name': masjidName,
-              'email': email,
-              'updatedAt': FieldValue.serverTimestamp(),
-            });
-            _masjidName = masjidName;
-            final prefs = await SharedPreferences.getInstance();
-            await prefs.setString('masjidName', _masjidName);
-            notifyListeners();
-          } catch (e) {
-            print('Could not update masjid name: $e');
+        // Load the masjid data from Firestore to verify
+        final doc = await FirebaseFirestore.instance
+            .collection('masjids')
+            .doc(user.uid)
+            .get();
+        
+        final storedMasjidName = (doc.data()?['masjidName'] ?? doc.data()?['name'] ?? '').toString().trim();
+        final providedMasjidName = masjidName.trim();
+        
+        // If masjid name was provided, verify it matches the stored name
+        if (providedMasjidName.isNotEmpty && storedMasjidName.isNotEmpty) {
+          // Case-insensitive comparison
+          if (storedMasjidName.toLowerCase() != providedMasjidName.toLowerCase()) {
+            // Sign out the user since credentials don't match the masjid
+            await FirebaseAuth.instance.signOut();
+            throw Exception('Masjid name does not match the account credentials. Please check your masjid name.');
           }
         }
+
+        // Credentials are valid and masjid name matches (or wasn't provided)
+        await _loadFromFirebaseUser(user);
       } else {
-        // Demo mode - accept any credentials
+        // Demo mode - use local storage only
         _userId = 'demo_${DateTime.now().millisecondsSinceEpoch}';
         _masjidName = masjidName;
         _isAuthenticated = true;

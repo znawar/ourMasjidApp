@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:html' as html;
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 
 class Announcement {
   final String id;
@@ -12,6 +14,7 @@ class Announcement {
   final DateTime date;
   final bool active;
   final String? masjidId;
+  final DateTime? expiresAt; // null means permanent (no expiration)
 
   Announcement({
     required this.id,
@@ -21,7 +24,14 @@ class Announcement {
     required this.date,
     this.active = true,
     this.masjidId,
+    this.expiresAt,
   });
+
+  /// Returns true if the announcement has expired
+  bool get isExpired => expiresAt != null && DateTime.now().isAfter(expiresAt!);
+
+  /// Returns true if the announcement is permanent (no expiration)
+  bool get isPermanent => expiresAt == null;
 
   Map<String, dynamic> toJson() {
     return {
@@ -34,6 +44,7 @@ class Announcement {
       'date': Timestamp.fromDate(date),
       'active': active,
       if (masjidId != null) 'masjidId': masjidId,
+      if (expiresAt != null) 'expiresAt': Timestamp.fromDate(expiresAt!),
     };
   }
 
@@ -47,6 +58,15 @@ class Announcement {
           DateTime.tryParse(rawDate?.toString() ?? '') ?? DateTime.now();
     }
 
+    // Parse expiresAt field
+    DateTime? parsedExpiresAt;
+    final rawExpiresAt = json['expiresAt'];
+    if (rawExpiresAt is Timestamp) {
+      parsedExpiresAt = rawExpiresAt.toDate();
+    } else if (rawExpiresAt != null) {
+      parsedExpiresAt = DateTime.tryParse(rawExpiresAt.toString());
+    }
+
     return Announcement(
       id: (json['id'] ?? '').toString(),
       title: (json['title'] ?? '').toString(),
@@ -58,6 +78,7 @@ class Announcement {
       masjidId: (json['masjidId'] ?? '').toString().trim().isEmpty
           ? null
           : (json['masjidId'] ?? '').toString().trim(),
+      expiresAt: parsedExpiresAt,
     );
   }
 
@@ -135,6 +156,9 @@ class AnnouncementsProvider with ChangeNotifier {
     });
   }
 
+  // ImgBB API key
+  static const String _imgbbApiKey = '3c10d4bc4f9af5a906d48428e40d1611';
+
   Future<void> uploadImage() async {
     _isUploading = true;
     notifyListeners();
@@ -148,26 +172,46 @@ class AnnouncementsProvider with ChangeNotifier {
 
       if (input.files!.isNotEmpty) {
         final file = input.files![0];
+        
+        // Read file as base64
         final reader = html.FileReader();
         reader.readAsDataUrl(file);
-
         await reader.onLoad.first;
-
-        _uploadedImageUrl = reader.result as String?;
+        
+        final dataUrl = reader.result as String;
+        // Extract base64 data (remove "data:image/xxx;base64," prefix)
+        final base64Data = dataUrl.split(',').last;
+        
+        // Upload to ImgBB
+        final response = await http.post(
+          Uri.parse('https://api.imgbb.com/1/upload'),
+          body: {
+            'key': _imgbbApiKey,
+            'image': base64Data,
+          },
+        );
+        
+        if (response.statusCode == 200) {
+          final jsonResponse = json.decode(response.body);
+          if (jsonResponse['success'] == true) {
+            _uploadedImageUrl = jsonResponse['data']['url'];
+          } else {
+            throw Exception('ImgBB upload failed: ${jsonResponse['error']['message']}');
+          }
+        } else {
+          throw Exception('ImgBB upload failed with status: ${response.statusCode}');
+        }
       }
     } catch (e) {
       print('Error uploading image: $e');
+      rethrow;
     } finally {
       _isUploading = false;
       notifyListeners();
     }
   }
 
-  Future<void> addAnnouncement(String title, String description) async {
-    if (_uploadedImageUrl == null) {
-      throw Exception('Please upload an image first');
-    }
-
+  Future<void> addAnnouncement(String title, String description, {DateTime? expiresAt}) async {
     final firestore = _firestore;
     final masjidId = _masjidId;
     if (firestore == null || masjidId == null || masjidId.trim().isEmpty) {
@@ -179,10 +223,11 @@ class AnnouncementsProvider with ChangeNotifier {
       id: docRef.id,
       title: title.trim(),
       description: description.trim(),
-      imageUrl: _uploadedImageUrl!,
+      imageUrl: _uploadedImageUrl ?? '', // Image is now optional
       date: DateTime.now(),
       active: true,
       masjidId: masjidId,
+      expiresAt: expiresAt,
     );
 
     await docRef.set({

@@ -7,6 +7,7 @@ import './providers/prayer_times_provider.dart';
 import './providers/announcements_provider.dart';
 import './screens/login_screen.dart';
 import './screens/admin_dashboard.dart';
+import './utils/admin_theme.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -57,22 +58,7 @@ class MyApp extends StatelessWidget {
       ],
       child: MaterialApp(
         title: 'Our Masjid App - Admin',
-        theme: ThemeData(
-          useMaterial3: true,
-          brightness: Brightness.light,
-          primaryColor: const Color(0xFF2196F3),
-          scaffoldBackgroundColor: const Color(0xFFF5F5F5),
-          appBarTheme: const AppBarTheme(
-            backgroundColor: Colors.white,
-            elevation: 1,
-            iconTheme: IconThemeData(color: Color(0xFF2196F3)),
-            titleTextStyle: TextStyle(
-              color: Color(0xFF2C3E50),
-              fontSize: 18,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ),
+        theme: AdminTheme.themeData,
         home: Consumer<AuthProvider>(
           builder: (context, auth, _) {
             return auth.isAuthenticated

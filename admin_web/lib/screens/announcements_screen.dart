@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:admin_web/providers/announcements_provider.dart';
+import 'package:admin_web/utils/admin_theme.dart';
 
 class AnnouncementsScreen extends StatefulWidget {
   const AnnouncementsScreen({super.key});
@@ -13,6 +14,8 @@ class _AnnouncementsScreenState extends State<AnnouncementsScreen> {
   final _titleController = TextEditingController();
   final _descriptionController = TextEditingController();
   bool _isImportant = false;
+  bool _isPermanent = true;
+  int _durationDays = 7; // Default duration in days
 
   @override
   void dispose() {
@@ -23,106 +26,319 @@ class _AnnouncementsScreenState extends State<AnnouncementsScreen> {
 
   Future<void> _addAnnouncement(BuildContext context) async {
     if (_titleController.text.isEmpty) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Please enter a title'),
-          backgroundColor: Colors.red,
+        SnackBar(
+          content: const Text('Please enter a title'),
+          backgroundColor: AdminTheme.accentRed,
         ),
       );
       return;
     }
 
     final provider = Provider.of<AnnouncementsProvider>(context, listen: false);
+    final scaffoldMessenger = ScaffoldMessenger.of(context);
+    
+    // Calculate expiration date if not permanent
+    DateTime? expiresAt;
+    if (!_isPermanent) {
+      expiresAt = DateTime.now().add(Duration(days: _durationDays));
+    }
     
     try {
       await provider.addAnnouncement(
         _titleController.text,
         _descriptionController.text,
+        expiresAt: expiresAt,
       );
       
       _titleController.clear();
       _descriptionController.clear();
       _isImportant = false;
+      _isPermanent = true;
+      _durationDays = 7;
       
-      ScaffoldMessenger.of(context).showSnackBar(
+      if (!mounted) return;
+      scaffoldMessenger.showSnackBar(
         const SnackBar(
           content: Text('Announcement added successfully'),
-          backgroundColor: Color(0xFF4490E2),
+          backgroundColor: AdminTheme.primaryBlue,
         ),
       );
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
+      if (!mounted) return;
+      scaffoldMessenger.showSnackBar(
         SnackBar(
           content: Text('Error: $e'),
-          backgroundColor: Colors.red,
+          backgroundColor: AdminTheme.accentRed,
         ),
       );
     }
   }
 
   void _showAddDialog(BuildContext context) {
+    // Reset to default values
+    _isPermanent = true;
+    _durationDays = 7;
+    
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('New Announcement'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: _titleController,
-                decoration: const InputDecoration(
-                  labelText: 'Title',
-                  border: OutlineInputBorder(),
-                  hintText: 'Enter announcement title',
-                ),
-              ),
-              const SizedBox(height: 15),
-              TextField(
-                controller: _descriptionController,
-                maxLines: 3,
-                decoration: const InputDecoration(
-                  labelText: 'Description (Optional)',
-                  border: OutlineInputBorder(),
-                  hintText: 'Enter announcement description',
-                ),
-              ),
-              const SizedBox(height: 15),
-              Row(
-                children: [
-                  Checkbox(
-                    value: _isImportant,
-                    onChanged: (value) {
-                      setState(() {
-                        _isImportant = value ?? false;
-                      });
-                    },
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: AdminTheme.borderRadiusLarge,
+          ),
+          title: const Text('New Announcement', style: AdminTheme.headingMedium),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(
+                  controller: _titleController,
+                  decoration: AdminTheme.inputDecoration(
+                    labelText: 'Title',
+                    hintText: 'Enter announcement title',
                   ),
-                  const Text('Mark as important'),
+                ),
+                const SizedBox(height: 15),
+                TextField(
+                  controller: _descriptionController,
+                  maxLines: 3,
+                  decoration: AdminTheme.inputDecoration(
+                    labelText: 'Description (Optional)',
+                    hintText: 'Enter announcement description',
+                  ),
+                ),
+                const SizedBox(height: 15),
+                Row(
+                  children: [
+                    Checkbox(
+                      value: _isImportant,
+                      activeColor: AdminTheme.primaryBlue,
+                      onChanged: (value) {
+                        setDialogState(() {
+                          _isImportant = value ?? false;
+                        });
+                        setState(() {});
+                      },
+                    ),
+                    const Text('Mark as important'),
+                  ],
+                ),
+                const SizedBox(height: 20),
+                // Duration Section
+                const Text(
+                  'Announcement Duration',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: AdminTheme.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                // Permanent Option
+                InkWell(
+                  onTap: () {
+                    setDialogState(() {
+                      _isPermanent = true;
+                    });
+                    setState(() {});
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      border: Border.all(
+                        color: _isPermanent ? AdminTheme.primaryBlue : AdminTheme.borderLight,
+                        width: _isPermanent ? 2 : 1,
+                      ),
+                      borderRadius: AdminTheme.borderRadiusSmall,
+                      color: _isPermanent ? AdminTheme.primaryBlue.withOpacity(0.05) : null,
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          _isPermanent ? Icons.radio_button_checked : Icons.radio_button_off,
+                          color: _isPermanent ? AdminTheme.primaryBlue : AdminTheme.textMuted,
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: const [
+                              Text(
+                                'Until Removed',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                  color: AdminTheme.textPrimary,
+                                ),
+                              ),
+                              Text(
+                                'Stays active until you delete it',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: AdminTheme.textMuted,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                // Time-limited Option
+                InkWell(
+                  onTap: () {
+                    setDialogState(() {
+                      _isPermanent = false;
+                    });
+                    setState(() {});
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      border: Border.all(
+                        color: !_isPermanent ? AdminTheme.primaryBlue : AdminTheme.borderLight,
+                        width: !_isPermanent ? 2 : 1,
+                      ),
+                      borderRadius: AdminTheme.borderRadiusSmall,
+                      color: !_isPermanent ? AdminTheme.primaryBlue.withOpacity(0.05) : null,
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          !_isPermanent ? Icons.radio_button_checked : Icons.radio_button_off,
+                          color: !_isPermanent ? AdminTheme.primaryBlue : AdminTheme.textMuted,
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: const [
+                              Text(
+                                'Time-limited',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                  color: AdminTheme.textPrimary,
+                                ),
+                              ),
+                              Text(
+                                'Auto-expire after specified duration',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: AdminTheme.textMuted,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                // Duration Picker (only show when time-limited is selected)
+                if (!_isPermanent) ...[
+                  const SizedBox(height: 15),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: AdminTheme.backgroundSection,
+                      borderRadius: AdminTheme.borderRadiusSmall,
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Number of Days',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                            color: AdminTheme.textMuted,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            SizedBox(
+                              width: 80,
+                              child: TextField(
+                                keyboardType: TextInputType.number,
+                                textAlign: TextAlign.center,
+                                decoration: InputDecoration(
+                                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  hintText: '7',
+                                ),
+                                controller: TextEditingController(text: _durationDays.toString()),
+                                onChanged: (value) {
+                                  final days = int.tryParse(value);
+                                  if (days != null && days > 0) {
+                                    setDialogState(() {
+                                      _durationDays = days;
+                                    });
+                                    setState(() {});
+                                  }
+                                },
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              _durationDays == 1 ? 'day' : 'days',
+                              style: const TextStyle(
+                                fontSize: 14,
+                                color: AdminTheme.textPrimary,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        Row(
+                          children: [
+                            const Icon(Icons.calendar_today, size: 16, color: AdminTheme.textMuted),
+                            const SizedBox(width: 8),
+                            Text(
+                              'Expires: ${_getExpirationDateText()}',
+                              style: const TextStyle(
+                                fontSize: 13,
+                                color: AdminTheme.textMuted,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
                 ],
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _addAnnouncement(context);
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF4490E2),
-              foregroundColor: Colors.white,
+              ],
             ),
-            child: const Text('Add Announcement'),
           ),
-        ],
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.pop(context);
+                _addAnnouncement(context);
+              },
+              style: AdminTheme.primaryButtonStyle,
+              child: const Text('Add Announcement'),
+            ),
+          ],
+        ),
       ),
     );
+  }
+  
+  String _getExpirationDateText() {
+    final expirationDate = DateTime.now().add(Duration(days: _durationDays));
+    final months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return '${months[expirationDate.month - 1]} ${expirationDate.day}, ${expirationDate.year}';
   }
 
   @override
@@ -134,47 +350,21 @@ class _AnnouncementsScreenState extends State<AnnouncementsScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              const Text(
-                'Announcements',
-                style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
-                  color: Color(0xFF2C3E50),
-                ),
-              ),
-              ElevatedButton.icon(
-                onPressed: () => _showAddDialog(context),
-                icon: const Icon(Icons.add),
-                label: const Text('New Announcement'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF4490E2),
-                  foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Manage announcements for TV display',
-            style: TextStyle(
-              color: Colors.grey[600],
-              fontSize: 16,
+          PageHeader(
+            icon: Icons.campaign,
+            title: 'Announcements',
+            subtitle: 'Manage announcements for TV display',
+            trailing: ElevatedButton.icon(
+              onPressed: () => _showAddDialog(context),
+              icon: const Icon(Icons.add),
+              label: const Text('New Announcement'),
+              style: AdminTheme.primaryButtonStyle,
             ),
           ),
-          const SizedBox(height: 30),
 
           // Image Upload Section
-          Card(
-            elevation: 2,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
+          Container(
+            decoration: AdminTheme.cardDecoration,
             child: Padding(
               padding: const EdgeInsets.all(20),
               child: Column(
@@ -182,18 +372,12 @@ class _AnnouncementsScreenState extends State<AnnouncementsScreen> {
                 children: [
                   const Text(
                     'Upload Announcement Image',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w600,
-                      color: Color(0xFF2C3E50),
-                    ),
+                    style: AdminTheme.headingMedium,
                   ),
                   const SizedBox(height: 8),
-                  Text(
+                  const Text(
                     'Upload an image for your announcement (Recommended: 1920x1080px for TV display)',
-                    style: TextStyle(
-                      color: Colors.grey[600],
-                    ),
+                    style: AdminTheme.bodyMedium,
                   ),
                   const SizedBox(height: 20),
 
@@ -205,16 +389,16 @@ class _AnnouncementsScreenState extends State<AnnouncementsScreen> {
                       height: 300,
                       width: double.infinity,
                       decoration: BoxDecoration(
-                        color: Colors.grey[100],
-                        borderRadius: BorderRadius.circular(10),
+                        color: AdminTheme.backgroundSection,
+                        borderRadius: AdminTheme.borderRadiusMedium,
                         border: Border.all(
-                          color: Colors.grey.shade300,
+                          color: AdminTheme.borderLight,
                           width: 2,
                         ),
                       ),
                       child: provider.uploadedImageUrl != null
                           ? ClipRRect(
-                              borderRadius: BorderRadius.circular(8),
+                              borderRadius: AdminTheme.borderRadiusSmall,
                               child: Image.network(
                                 provider.uploadedImageUrl!,
                                 fit: BoxFit.cover,
@@ -226,30 +410,19 @@ class _AnnouncementsScreenState extends State<AnnouncementsScreen> {
                                 Icon(
                                   Icons.cloud_upload,
                                   size: 60,
-                                  color: provider.isUploading ? Colors.grey[300] : Colors.grey[400],
+                                  color: provider.isUploading 
+                                      ? AdminTheme.borderLight 
+                                      : AdminTheme.textMuted,
                                 ),
                                 const SizedBox(height: 10),
-                                provider.isUploading
-                                    ? const Text(
-                                        'Uploading...',
-                                        style: TextStyle(
-                                          color: Colors.grey,
-                                          fontSize: 16,
-                                        ),
-                                      )
-                                    : const Text(
-                                        'Click to upload image',
-                                        style: TextStyle(
-                                          color: Colors.grey,
-                                          fontSize: 16,
-                                        ),
-                                      ),
-                                const SizedBox(height: 5),
                                 Text(
+                                  provider.isUploading ? 'Uploading...' : 'Click to upload image',
+                                  style: AdminTheme.bodyLarge,
+                                ),
+                                const SizedBox(height: 5),
+                                const Text(
                                   'PNG, JPG up to 5MB',
-                                  style: TextStyle(
-                                    color: Colors.grey[400],
-                                  ),
+                                  style: AdminTheme.bodySmall,
                                 ),
                               ],
                             ),
@@ -263,10 +436,7 @@ class _AnnouncementsScreenState extends State<AnnouncementsScreen> {
                         Expanded(
                           child: ElevatedButton(
                             onPressed: () => provider.clearUploadedImage(),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.grey[200],
-                              foregroundColor: Colors.grey[700],
-                            ),
+                            style: AdminTheme.secondaryButtonStyle,
                             child: const Text('Remove Image'),
                           ),
                         ),
@@ -274,10 +444,7 @@ class _AnnouncementsScreenState extends State<AnnouncementsScreen> {
                         Expanded(
                           child: ElevatedButton(
                             onPressed: () => _showAddDialog(context),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(0xFF4490E2),
-                              foregroundColor: Colors.white,
-                            ),
+                            style: AdminTheme.primaryButtonStyle,
                             child: const Text('Add Announcement'),
                           ),
                         ),
@@ -297,11 +464,7 @@ class _AnnouncementsScreenState extends State<AnnouncementsScreen> {
               children: [
                 Text(
                   'Active Announcements (${provider.announcements.length})',
-                  style: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w600,
-                    color: Color(0xFF2C3E50),
-                  ),
+                  style: AdminTheme.headingMedium,
                 ),
                 const SizedBox(height: 15),
 
@@ -330,22 +493,17 @@ class _AnnouncementsScreenState extends State<AnnouncementsScreen> {
                   Icon(
                     Icons.announcement,
                     size: 80,
-                    color: Colors.grey[300],
+                    color: AdminTheme.borderLight,
                   ),
                   const SizedBox(height: 20),
                   const Text(
                     'No announcements yet',
-                    style: TextStyle(
-                      fontSize: 18,
-                      color: Colors.grey,
-                    ),
+                    style: AdminTheme.headingSmall,
                   ),
                   const SizedBox(height: 10),
-                  Text(
+                  const Text(
                     'Upload an image and create your first announcement',
-                    style: TextStyle(
-                      color: Colors.grey[400],
-                    ),
+                    style: AdminTheme.bodyMedium,
                     textAlign: TextAlign.center,
                   ),
                 ],
@@ -357,24 +515,92 @@ class _AnnouncementsScreenState extends State<AnnouncementsScreen> {
   }
 
   Widget _buildAnnouncementCard(Announcement announcement, AnnouncementsProvider provider) {
-    return Card(
-      elevation: 2,
+    final isExpired = announcement.isExpired;
+    
+    return Container(
+      decoration: AdminTheme.cardDecoration.copyWith(
+        color: isExpired ? Colors.grey.shade100 : null,
+      ),
       child: Column(
         children: [
           Expanded(
-            child: ClipRRect(
-              borderRadius: const BorderRadius.vertical(top: Radius.circular(8)),
-              child: Image.network(
-                announcement.imageUrl,
-                fit: BoxFit.cover,
-                width: double.infinity,
-                errorBuilder: (context, error, stackTrace) {
-                  return Container(
-                    color: Colors.grey[200],
-                    child: const Icon(Icons.broken_image, color: Colors.grey),
-                  );
-                },
-              ),
+            child: Stack(
+              children: [
+                ClipRRect(
+                  borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+                  child: Image.network(
+                    announcement.imageUrl,
+                    fit: BoxFit.cover,
+                    width: double.infinity,
+                    height: double.infinity,
+                    errorBuilder: (context, error, stackTrace) {
+                      return Container(
+                        color: AdminTheme.backgroundSection,
+                        child: const Icon(Icons.broken_image, color: AdminTheme.textMuted),
+                      );
+                    },
+                  ),
+                ),
+                // Expiration Badge
+                if (announcement.expiresAt != null)
+                  Positioned(
+                    top: 8,
+                    right: 8,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: isExpired ? AdminTheme.accentRed : AdminTheme.accentAmber,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            isExpired ? Icons.timer_off : Icons.timer,
+                            size: 12,
+                            color: Colors.white,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            isExpired ? 'Expired' : _getRemainingTime(announcement.expiresAt!),
+                            style: const TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                if (announcement.isPermanent)
+                  Positioned(
+                    top: 8,
+                    right: 8,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: AdminTheme.accentEmerald,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: const [
+                          Icon(Icons.check_circle, size: 12, color: Colors.white),
+                          SizedBox(width: 4),
+                          Text(
+                            'Until removed',
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
             ),
           ),
           Padding(
@@ -384,9 +610,10 @@ class _AnnouncementsScreenState extends State<AnnouncementsScreen> {
               children: [
                 Text(
                   announcement.title,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontWeight: FontWeight.w600,
                     fontSize: 12,
+                    color: isExpired ? AdminTheme.textMuted : AdminTheme.textPrimary,
                   ),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -397,13 +624,13 @@ class _AnnouncementsScreenState extends State<AnnouncementsScreen> {
                   children: [
                     Switch(
                       value: announcement.active,
-                      activeThumbColor: const Color(0xFF4490E2),
+                      activeColor: AdminTheme.primaryBlue,
                       onChanged: (_) {
                         provider.toggleAnnouncement(announcement.id);
                       },
                     ),
                     IconButton(
-                      icon: const Icon(Icons.delete, size: 18, color: Colors.red),
+                      icon: const Icon(Icons.delete, size: 18, color: AdminTheme.accentRed),
                       onPressed: () {
                         provider.deleteAnnouncement(announcement.id);
                       },
@@ -416,5 +643,20 @@ class _AnnouncementsScreenState extends State<AnnouncementsScreen> {
         ],
       ),
     );
+  }
+  
+  String _getRemainingTime(DateTime expiresAt) {
+    final now = DateTime.now();
+    final difference = expiresAt.difference(now);
+    
+    if (difference.isNegative) return 'Expired';
+    
+    if (difference.inDays > 0) {
+      return '${difference.inDays}d left';
+    } else if (difference.inHours > 0) {
+      return '${difference.inHours}h left';
+    } else {
+      return '${difference.inMinutes}m left';
+    }
   }
 }

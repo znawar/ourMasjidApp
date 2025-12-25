@@ -1,14 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart';
-// Conditionally load the real TV screen only on web. On mobile platforms we
-// use a small stub to avoid importing web-only packages (which can break
-// Android/iOS builds).
-// The import may be unused at runtime because we no longer auto-select the
-// TV display; keep it so the TV code remains available. Silence the
-// analyzer about an unused import.
-// ignore: unused_import
-import 'screens/tv_display_screen_stub.dart'
-  if (dart.library.html) 'screens/tv_display_screen.dart';
 import 'screens/mobile_home_screen.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart';
@@ -78,22 +68,8 @@ class ResponsiveLauncher extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Default: show the mobile HomeScreen.
-    // Web-only override: allow launching the TV display via URL params.
-    // Example:
-    //   https://YOUR_APP_URL/?mode=tv&masjidId=YOUR_MASJID_ID
-    if (kIsWeb) {
-      final params = Uri.base.queryParameters;
-      final mode = (params['mode'] ?? '').trim().toLowerCase();
-      final tvFlag = (params['tv'] ?? '').trim().toLowerCase();
-
-      final isTv = mode == 'tv' || mode == 'display' || tvFlag == '1' || tvFlag == 'true';
-      if (isTv) {
-        final masjidId = params['masjidId']?.trim();
-        return TVDisplayScreen(masjidId: (masjidId?.isEmpty ?? true) ? null : masjidId);
-      }
-    }
-
+    // Mobile app always shows the HomeScreen
+    // TV display is handled separately in admin_web project
     return const HomeScreen();
   }
 }

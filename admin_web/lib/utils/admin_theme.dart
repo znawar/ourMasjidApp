@@ -1,0 +1,508 @@
+import 'package:flutter/material.dart';
+
+/// Centralized theme for the admin web application.
+/// This ensures consistent styling across all screens.
+class AdminTheme {
+  AdminTheme._();
+
+  // ==========================================================================
+  // COLORS
+  // ==========================================================================
+
+  /// Primary brand colors
+  static const Color primaryBlue = Color(0xFF1976D2);
+  static const Color primaryBlueDark = Color(0xFF1565C0);
+  static const Color primaryBlueLight = Color(0xFF2196F3);
+  static const Color primaryBlueLighter = Color(0xFF42A5F5);
+  static const Color primaryNavy = Color(0xFF0D47A1);
+
+  /// Secondary/accent colors
+  static const Color accentGreen = Color(0xFF4CAF50);
+  static const Color accentGreenDark = Color(0xFF2E7D32);
+  static const Color accentEmerald = Color(0xFF10B981);
+  static const Color accentOrange = Color(0xFFFF9800);
+  static const Color accentAmber = Color(0xFFFFA726);
+  static const Color accentRed = Color(0xFFE53935);
+  static const Color accentRedLight = Color(0xFFEF4444);
+  static const Color accentPurple = Color(0xFF7B1FA2);
+  static const Color accentSkyBlue = Color(0xFF3B82F6);
+
+  /// Text colors
+  static const Color textPrimary = Color(0xFF1E293B);
+  static const Color textSecondary = Color(0xFF2C3E50);
+  static const Color textMuted = Color(0xFF64748B);
+  static const Color textSubtle = Color(0xFF475569);
+
+  /// Background colors
+  static const Color backgroundLight = Color(0xFFF5F5F5);
+  static const Color backgroundCard = Colors.white;
+  static const Color backgroundSection = Color(0xFFF5F7FA);
+  static const Color backgroundBlueLight = Color(0xFFE3F2FD);
+  static const Color backgroundGreenLight = Color(0xFFE8F5E9);
+  static const Color backgroundPurpleLight = Color(0xFFF3E5F5);
+
+  /// Border colors
+  static const Color borderLight = Color(0xFFE0E0E0);
+  static const Color borderMedium = Color(0xFFBDBDBD);
+  static const Color borderBlueLight = Color(0xFFBBDEFB);
+  static const Color borderGreenLight = Color(0xFFC8E6C9);
+  static const Color borderPurpleLight = Color(0xFFE1BEE7);
+  static const Color accentPurpleDark = Color(0xFF6A1B9A);
+
+  // ==========================================================================
+  // GRADIENTS
+  // ==========================================================================
+
+  static const LinearGradient primaryGradient = LinearGradient(
+    begin: Alignment.topLeft,
+    end: Alignment.bottomRight,
+    colors: [primaryBlue, primaryBlueDark],
+  );
+
+  static const LinearGradient headerGradient = LinearGradient(
+    begin: Alignment.topLeft,
+    end: Alignment.bottomRight,
+    colors: [primaryBlue, primaryBlueDark],
+  );
+
+  static const LinearGradient backgroundGradient = LinearGradient(
+    begin: Alignment.topLeft,
+    end: Alignment.bottomRight,
+    colors: [
+      Color(0xFFF5F7FA),
+      Color(0xFFE3F2FD),
+    ],
+  );
+
+  // ==========================================================================
+  // TEXT STYLES
+  // ==========================================================================
+
+  static const TextStyle headingLarge = TextStyle(
+    fontSize: 24,
+    fontWeight: FontWeight.bold,
+    color: textSecondary,
+  );
+
+  static const TextStyle headingMedium = TextStyle(
+    fontSize: 18,
+    fontWeight: FontWeight.w600,
+    color: textSecondary,
+  );
+
+  static const TextStyle headingSmall = TextStyle(
+    fontSize: 16,
+    fontWeight: FontWeight.w600,
+    color: textPrimary,
+  );
+
+  static const TextStyle bodyLarge = TextStyle(
+    fontSize: 16,
+    color: textMuted,
+  );
+
+  static const TextStyle bodyMedium = TextStyle(
+    fontSize: 14,
+    color: textMuted,
+  );
+
+  static const TextStyle bodySmall = TextStyle(
+    fontSize: 12,
+    color: textMuted,
+  );
+
+  static const TextStyle labelStyle = TextStyle(
+    fontSize: 12,
+    fontWeight: FontWeight.w600,
+    color: primaryBlue,
+    letterSpacing: 0.5,
+  );
+
+  // ==========================================================================
+  // BORDER RADIUS
+  // ==========================================================================
+
+  static const double radiusSmall = 8.0;
+  static const double radiusMedium = 12.0;
+  static const double radiusLarge = 16.0;
+
+  static BorderRadius borderRadiusSmall = BorderRadius.circular(radiusSmall);
+  static BorderRadius borderRadiusMedium = BorderRadius.circular(radiusMedium);
+  static BorderRadius borderRadiusLarge = BorderRadius.circular(radiusLarge);
+
+  // ==========================================================================
+  // SHADOWS
+  // ==========================================================================
+
+  static List<BoxShadow> shadowLight = [
+    BoxShadow(
+      color: Colors.black.withOpacity(0.03),
+      blurRadius: 8,
+      offset: const Offset(0, 2),
+    ),
+  ];
+
+  static List<BoxShadow> shadowMedium = [
+    BoxShadow(
+      color: Colors.black.withOpacity(0.08),
+      blurRadius: 12,
+      offset: const Offset(0, 4),
+    ),
+  ];
+
+  static List<BoxShadow> primaryShadow = [
+    BoxShadow(
+      color: primaryBlue.withOpacity(0.15),
+      blurRadius: 8,
+      offset: const Offset(0, 3),
+    ),
+  ];
+
+  // ==========================================================================
+  // CARD DECORATIONS
+  // ==========================================================================
+
+  static BoxDecoration cardDecoration = BoxDecoration(
+    color: backgroundCard,
+    borderRadius: borderRadiusMedium,
+    border: Border.all(color: borderLight.withOpacity(0.5)),
+    boxShadow: shadowLight,
+  );
+
+  static BoxDecoration sectionDecoration = BoxDecoration(
+    color: backgroundSection,
+    borderRadius: borderRadiusSmall,
+  );
+
+  static BoxDecoration primaryCardDecoration = BoxDecoration(
+    gradient: primaryGradient,
+    borderRadius: borderRadiusMedium,
+    boxShadow: primaryShadow,
+  );
+
+  // ==========================================================================
+  // BUTTON STYLES
+  // ==========================================================================
+
+  static ButtonStyle primaryButtonStyle = ElevatedButton.styleFrom(
+    backgroundColor: primaryBlue,
+    foregroundColor: Colors.white,
+    elevation: 0,
+    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+    shape: RoundedRectangleBorder(
+      borderRadius: borderRadiusSmall,
+    ),
+  );
+
+  static ButtonStyle secondaryButtonStyle = ElevatedButton.styleFrom(
+    backgroundColor: Colors.white,
+    foregroundColor: primaryBlue,
+    elevation: 0,
+    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+    shape: RoundedRectangleBorder(
+      borderRadius: borderRadiusSmall,
+    ),
+    side: const BorderSide(color: primaryBlue),
+  );
+
+  static ButtonStyle outlinedButtonStyle = OutlinedButton.styleFrom(
+    foregroundColor: primaryBlue,
+    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+    shape: RoundedRectangleBorder(
+      borderRadius: borderRadiusSmall,
+    ),
+    side: const BorderSide(color: primaryBlue),
+  );
+
+  static ButtonStyle successButtonStyle = ElevatedButton.styleFrom(
+    backgroundColor: accentGreen,
+    foregroundColor: Colors.white,
+    elevation: 0,
+    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+    shape: RoundedRectangleBorder(
+      borderRadius: borderRadiusSmall,
+    ),
+  );
+
+  // ==========================================================================
+  // INPUT DECORATIONS
+  // ==========================================================================
+
+  static InputDecoration inputDecoration({
+    required String labelText,
+    String? hintText,
+    IconData? prefixIcon,
+    Widget? suffixIcon,
+  }) {
+    return InputDecoration(
+      labelText: labelText,
+      hintText: hintText,
+      prefixIcon: prefixIcon != null ? Icon(prefixIcon, color: primaryBlue) : null,
+      suffixIcon: suffixIcon,
+      filled: true,
+      fillColor: Colors.white,
+      border: OutlineInputBorder(
+        borderRadius: borderRadiusMedium,
+        borderSide: BorderSide(color: borderLight),
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: borderRadiusMedium,
+        borderSide: BorderSide(color: borderLight),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: borderRadiusMedium,
+        borderSide: const BorderSide(color: primaryBlue, width: 2),
+      ),
+      errorBorder: OutlineInputBorder(
+        borderRadius: borderRadiusMedium,
+        borderSide: const BorderSide(color: accentRed),
+      ),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+    );
+  }
+
+  // ==========================================================================
+  // STATUS INDICATORS
+  // ==========================================================================
+
+  static Widget statusIndicator({
+    required bool isActive,
+    String? activeText,
+    String? inactiveText,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: (isActive ? accentGreen : accentOrange).withOpacity(0.1),
+        borderRadius: borderRadiusSmall,
+        border: Border.all(
+          color: isActive ? accentGreen : accentOrange,
+          width: 1,
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            Icons.circle,
+            size: 6,
+            color: isActive ? accentGreen : accentOrange,
+          ),
+          const SizedBox(width: 6),
+          Text(
+            isActive ? (activeText ?? 'ONLINE') : (inactiveText ?? 'OFFLINE'),
+            style: TextStyle(
+              color: isActive ? accentGreen : accentOrange,
+              fontSize: 10,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ==========================================================================
+  // SECTION HEADER
+  // ==========================================================================
+
+  static Widget sectionHeader({
+    required IconData icon,
+    required String title,
+    Widget? trailing,
+  }) {
+    return Row(
+      children: [
+        Icon(icon, color: primaryBlue, size: 16),
+        const SizedBox(width: 6),
+        Text(
+          title.toUpperCase(),
+          style: labelStyle,
+        ),
+        if (trailing != null) ...[
+          const Spacer(),
+          trailing,
+        ],
+      ],
+    );
+  }
+
+  // ==========================================================================
+  // THEME DATA
+  // ==========================================================================
+
+  static ThemeData get themeData => ThemeData(
+        useMaterial3: true,
+        brightness: Brightness.light,
+        primaryColor: primaryBlue,
+        scaffoldBackgroundColor: backgroundLight,
+        colorScheme: ColorScheme.light(
+          primary: primaryBlue,
+          secondary: primaryBlueDark,
+          surface: backgroundCard,
+          error: accentRed,
+        ),
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Colors.white,
+          elevation: 0,
+          scrolledUnderElevation: 1,
+          iconTheme: IconThemeData(color: primaryBlue),
+          titleTextStyle: TextStyle(
+            color: textSecondary,
+            fontSize: 18,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        cardTheme: CardThemeData(
+          color: backgroundCard,
+          elevation: 0,
+          shape: RoundedRectangleBorder(
+            borderRadius: borderRadiusMedium,
+            side: BorderSide(color: borderLight.withOpacity(0.5)),
+          ),
+        ),
+        elevatedButtonTheme: ElevatedButtonThemeData(
+          style: primaryButtonStyle,
+        ),
+        outlinedButtonTheme: OutlinedButtonThemeData(
+          style: outlinedButtonStyle,
+        ),
+        inputDecorationTheme: InputDecorationTheme(
+          filled: true,
+          fillColor: Colors.white,
+          border: OutlineInputBorder(
+            borderRadius: borderRadiusMedium,
+            borderSide: BorderSide(color: borderLight),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: borderRadiusMedium,
+            borderSide: BorderSide(color: borderLight),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: borderRadiusMedium,
+            borderSide: const BorderSide(color: primaryBlue, width: 2),
+          ),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        ),
+        dividerTheme: DividerThemeData(
+          color: borderLight,
+          thickness: 1,
+        ),
+        listTileTheme: ListTileThemeData(
+          iconColor: primaryBlue,
+          shape: RoundedRectangleBorder(
+            borderRadius: borderRadiusSmall,
+          ),
+        ),
+        snackBarTheme: SnackBarThemeData(
+          backgroundColor: primaryBlueDark,
+          contentTextStyle: const TextStyle(color: Colors.white),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+            borderRadius: borderRadiusMedium,
+          ),
+        ),
+        dialogTheme: DialogThemeData(
+          shape: RoundedRectangleBorder(
+            borderRadius: borderRadiusLarge,
+          ),
+        ),
+        chipTheme: ChipThemeData(
+          backgroundColor: backgroundSection,
+          selectedColor: primaryBlue.withOpacity(0.2),
+          labelStyle: const TextStyle(color: textPrimary),
+          shape: RoundedRectangleBorder(
+            borderRadius: borderRadiusSmall,
+          ),
+        ),
+      );
+}
+
+/// Extension methods for convenient access to theme properties
+extension AdminThemeContext on BuildContext {
+  /// Quick access to AdminTheme colors
+  AdminThemeColors get adminColors => AdminThemeColors();
+}
+
+class AdminThemeColors {
+  Color get primary => AdminTheme.primaryBlue;
+  Color get primaryDark => AdminTheme.primaryBlueDark;
+  Color get primaryLight => AdminTheme.primaryBlueLight;
+  Color get success => AdminTheme.accentGreen;
+  Color get warning => AdminTheme.accentOrange;
+  Color get error => AdminTheme.accentRed;
+  Color get textPrimary => AdminTheme.textPrimary;
+  Color get textSecondary => AdminTheme.textSecondary;
+  Color get textMuted => AdminTheme.textMuted;
+  Color get background => AdminTheme.backgroundLight;
+  Color get card => AdminTheme.backgroundCard;
+  Color get section => AdminTheme.backgroundSection;
+}
+
+/// Reusable page header widget for consistent styling across all screens
+class PageHeader extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final Widget? trailing;
+
+  const PageHeader({
+    super.key,
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    this.trailing,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 24),
+      child: Row(
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                colors: [AdminTheme.primaryBlue, AdminTheme.primaryBlueLight],
+              ),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(
+              icon,
+              color: Colors.white,
+              size: 24,
+            ),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.w700,
+                    color: AdminTheme.primaryBlueDark,
+                    letterSpacing: -0.5,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  subtitle,
+                  style: const TextStyle(
+                    color: AdminTheme.textMuted,
+                    fontSize: 14,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (trailing != null) trailing!,
+        ],
+      ),
+    );
+  }
+}

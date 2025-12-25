@@ -3,6 +3,8 @@ import 'package:provider/provider.dart';
 import 'package:admin_web/providers/auth_provider.dart';
 import 'package:admin_web/screens/signup_screen.dart';
 import 'package:admin_web/screens/tv_connection_screen.dart';
+import 'package:admin_web/screens/admin_dashboard.dart';
+import 'package:admin_web/utils/admin_theme.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -41,13 +43,13 @@ class _LoginScreenState extends State<LoginScreen> {
         _masjidNameController.text.trim(),
       );
       
-      // Login successful - navigate to TV connection screen
+      // Login successful - navigate to Admin Dashboard
       if (mounted) {
         Navigator.pushReplacement(
           context,
           PageRouteBuilder(
             pageBuilder: (context, animation, secondaryAnimation) =>
-                const TVConnectionScreen(),
+                const AdminDashboard(),
             transitionsBuilder: (context, animation, secondaryAnimation, child) {
               return FadeTransition(
                 opacity: animation,
@@ -63,7 +65,7 @@ class _LoginScreenState extends State<LoginScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Login failed: ${e.toString()}'),
-            backgroundColor: Colors.red,
+            backgroundColor: AdminTheme.accentRed,
             behavior: SnackBarBehavior.floating,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(12),
@@ -125,9 +127,9 @@ class _LoginScreenState extends State<LoginScreen> {
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
             colors: [
-              const Color(0xFF2196F3).withOpacity(0.05),
-              const Color(0xFF1976D2).withOpacity(0.03),
-              const Color(0xFFE3F2FD).withOpacity(0.1),
+              AdminTheme.primaryBlueLight.withOpacity(0.05),
+              AdminTheme.primaryBlue.withOpacity(0.03),
+              AdminTheme.backgroundBlueLight.withOpacity(0.1),
               Colors.white,
             ],
           ),
@@ -145,7 +147,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   shape: BoxShape.circle,
                   gradient: RadialGradient(
                     colors: [
-                      const Color(0xFF2196F3).withOpacity(0.08),
+                      AdminTheme.primaryBlueLight.withOpacity(0.08),
                       Colors.transparent,
                     ],
                   ),
@@ -162,7 +164,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   shape: BoxShape.circle,
                   gradient: RadialGradient(
                     colors: [
-                      const Color(0xFF1976D2).withOpacity(0.05),
+                      AdminTheme.primaryBlue.withOpacity(0.05),
                       Colors.transparent,
                     ],
                   ),
@@ -197,13 +199,11 @@ class _LoginScreenState extends State<LoginScreen> {
                                           width: 48,
                                           height: 48,
                                           decoration: BoxDecoration(
-                                            gradient: const LinearGradient(
-                                              colors: [Color(0xFF2196F3), Color(0xFF1976D2)],
-                                            ),
+                                            gradient: AdminTheme.primaryGradient,
                                             borderRadius: BorderRadius.circular(14),
                                             boxShadow: [
                                               BoxShadow(
-                                                color: const Color(0xFF2196F3).withOpacity(0.3),
+                                                color: AdminTheme.primaryBlueLight.withOpacity(0.3),
                                                 blurRadius: 20,
                                                 offset: const Offset(0, 8),
                                               ),
@@ -217,11 +217,11 @@ class _LoginScreenState extends State<LoginScreen> {
                                         ),
                                         const SizedBox(width: 12),
                                         const Text(
-                                          'MasjidConnect',
+                                          'Our Masjid App',
                                           style: TextStyle(
                                             fontSize: 28,
                                             fontWeight: FontWeight.w800,
-                                            color: Color(0xFF1E293B),
+                                            color: AdminTheme.textPrimary,
                                             letterSpacing: -0.5,
                                           ),
                                         ),
@@ -229,11 +229,11 @@ class _LoginScreenState extends State<LoginScreen> {
                                     ),
                                     const SizedBox(height: 40),
                                     const Text(
-                                      'Welcome to\nMasjidConnect',
+                                      'Welcome to\nOur Masjid App',
                                       style: TextStyle(
                                         fontSize: 42,
                                         fontWeight: FontWeight.w800,
-                                        color: Color(0xFF1E293B),
+                                        color: AdminTheme.textPrimary,
                                         height: 1.1,
                                         letterSpacing: -1,
                                       ),
@@ -243,7 +243,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                       'Modern mosque management platform for announcements, prayer times, and TV displays.',
                                       style: TextStyle(
                                         fontSize: 18,
-                                        color: Colors.grey.shade600,
+                                        color: AdminTheme.textMuted,
                                         height: 1.6,
                                       ),
                                     ),
@@ -302,13 +302,13 @@ class _LoginScreenState extends State<LoginScreen> {
                                             borderRadius: BorderRadius.circular(16),
                                           ),
                                           side: BorderSide(
-                                            color: const Color(0xFF2196F3).withOpacity(0.3),
+                                            color: AdminTheme.primaryBlueLight.withOpacity(0.3),
                                             width: 2,
                                           ),
                                         ),
                                         icon: const Icon(
                                           Icons.tv,
-                                          color: Color(0xFF2196F3),
+                                          color: AdminTheme.primaryBlue,
                                           size: 20,
                                         ),
                                         label: const Text(
@@ -316,7 +316,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                           style: TextStyle(
                                             fontSize: 16,
                                             fontWeight: FontWeight.w600,
-                                            color: Color(0xFF2196F3),
+                                            color: AdminTheme.primaryBlue,
                                           ),
                                         ),
                                       ),
@@ -349,13 +349,11 @@ class _LoginScreenState extends State<LoginScreen> {
                                         width: 64,
                                         height: 64,
                                         decoration: BoxDecoration(
-                                          gradient: const LinearGradient(
-                                            colors: [Color(0xFF2196F3), Color(0xFF1976D2)],
-                                          ),
+                                          gradient: AdminTheme.primaryGradient,
                                           borderRadius: BorderRadius.circular(18),
                                           boxShadow: [
                                             BoxShadow(
-                                              color: const Color(0xFF2196F3).withOpacity(0.3),
+                                              color: AdminTheme.primaryBlueLight.withOpacity(0.3),
                                               blurRadius: 15,
                                               offset: const Offset(0, 5),
                                             ),
@@ -369,11 +367,11 @@ class _LoginScreenState extends State<LoginScreen> {
                                       ),
                                       const SizedBox(height: 20),
                                       const Text(
-                                        'MasjidConnect',
+                                        'Our Masjid App',
                                         style: TextStyle(
                                           fontSize: 28,
                                           fontWeight: FontWeight.w800,
-                                          color: Color(0xFF1E293B),
+                                          color: AdminTheme.textPrimary,
                                         ),
                                       ),
                                       const SizedBox(height: 8),
@@ -417,7 +415,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                               style: TextStyle(
                                                 fontSize: 32,
                                                 fontWeight: FontWeight.w800,
-                                                color: Color(0xFF1E293B),
+                                                color: AdminTheme.textPrimary,
                                               ),
                                             ),
                                             const SizedBox(height: 8),
@@ -425,7 +423,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                               'Enter your details to continue',
                                               style: TextStyle(
                                                 fontSize: 16,
-                                                color: Colors.grey.shade600,
+                                                color: AdminTheme.textMuted,
                                               ),
                                             ),
                                             const SizedBox(height: 32),
@@ -474,7 +472,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                                 style: TextStyle(
                                                   fontSize: 14,
                                                   fontWeight: FontWeight.w600,
-                                                  color: Color(0xFF475569),
+                                                  color: AdminTheme.textSubtle,
                                                 ),
                                               ),
                                               const SizedBox(height: 8),
@@ -483,7 +481,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                                 obscureText: !_showPassword,
                                                 style: const TextStyle(
                                                   fontSize: 16,
-                                                  color: Color(0xFF1E293B),
+                                                  color: AdminTheme.textPrimary,
                                                 ),
                                                 decoration: InputDecoration(
                                                   hintText: 'Enter your password',
@@ -518,7 +516,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                                   focusedBorder: OutlineInputBorder(
                                                     borderRadius: BorderRadius.circular(14),
                                                     borderSide: const BorderSide(
-                                                      color: Color(0xFF2196F3),
+                                                      color: AdminTheme.primaryBlueLight,
                                                       width: 2,
                                                     ),
                                                   ),
@@ -559,7 +557,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                               child: const Text(
                                                 'Forgot Password?',
                                                 style: TextStyle(
-                                                  color: Color(0xFF2196F3),
+                                                  color: AdminTheme.primaryBlue,
                                                   fontWeight: FontWeight.w500,
                                                 ),
                                               ),
@@ -574,7 +572,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                             child: ElevatedButton(
                                               onPressed: _isLoading ? null : _login,
                                               style: ElevatedButton.styleFrom(
-                                                backgroundColor: const Color(0xFF2196F3),
+                                                backgroundColor: AdminTheme.primaryBlue,
                                                 foregroundColor: Colors.white,
                                                 shape: RoundedRectangleBorder(
                                                   borderRadius: BorderRadius.circular(14),
@@ -654,7 +652,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                                 child: const Text(
                                                   'Sign up',
                                                   style: TextStyle(
-                                                    color: Color(0xFF2196F3),
+                                                    color: AdminTheme.primaryBlue,
                                                     fontWeight: FontWeight.w600,
                                                   ),
                                                 ),
@@ -674,19 +672,19 @@ class _LoginScreenState extends State<LoginScreen> {
                                                   shape: RoundedRectangleBorder(
                                                     borderRadius: BorderRadius.circular(14),
                                                     side: BorderSide(
-                                                      color: Colors.grey.shade300,
+                                                      color: AdminTheme.borderLight,
                                                     ),
                                                   ),
                                                 ),
                                                 icon: const Icon(
                                                   Icons.tv,
-                                                  color: Color(0xFF2196F3),
+                                                  color: AdminTheme.primaryBlue,
                                                   size: 20,
                                                 ),
                                                 label: const Text(
                                                   'Connect TV Display',
                                                   style: TextStyle(
-                                                    color: Color(0xFF2196F3),
+                                                    color: AdminTheme.primaryBlue,
                                                     fontWeight: FontWeight.w600,
                                                   ),
                                                 ),
@@ -703,7 +701,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                 if (isMobile) ...[
                                   const SizedBox(height: 40),
                                   Text(
-                                    '© 2025 MasjidConnect. All rights reserved.',
+                                    '© 2025 Our Masjid App. All rights reserved.',
                                     style: TextStyle(
                                       color: Colors.grey.shade500,
                                       fontSize: 12,
@@ -742,7 +740,7 @@ class _LoginScreenState extends State<LoginScreen> {
           style: const TextStyle(
             fontSize: 14,
             fontWeight: FontWeight.w600,
-            color: Color(0xFF475569),
+            color: AdminTheme.textMuted,
           ),
         ),
         const SizedBox(height: 8),
@@ -751,16 +749,16 @@ class _LoginScreenState extends State<LoginScreen> {
           keyboardType: keyboardType,
           style: const TextStyle(
             fontSize: 16,
-            color: Color(0xFF1E293B),
+            color: AdminTheme.textPrimary,
           ),
           decoration: InputDecoration(
             hintText: hint,
-            hintStyle: TextStyle(color: Colors.grey.shade400),
+            hintStyle: TextStyle(color: AdminTheme.textMuted.withOpacity(0.6)),
             filled: true,
-            fillColor: Colors.grey.shade50,
+            fillColor: AdminTheme.backgroundSection,
             prefixIcon: Icon(
               icon,
-              color: Colors.grey.shade500,
+              color: AdminTheme.textMuted,
               size: 20,
             ),
             border: OutlineInputBorder(
@@ -774,14 +772,14 @@ class _LoginScreenState extends State<LoginScreen> {
             focusedBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(14),
               borderSide: const BorderSide(
-                color: Color(0xFF2196F3),
+                color: AdminTheme.primaryBlue,
                 width: 2,
               ),
             ),
             errorBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(14),
               borderSide: const BorderSide(
-                color: Colors.red,
+                color: AdminTheme.accentRed,
                 width: 1,
               ),
             ),
@@ -808,12 +806,12 @@ class _LoginScreenState extends State<LoginScreen> {
           width: 48,
           height: 48,
           decoration: BoxDecoration(
-            color: const Color(0xFF2196F3).withOpacity(0.1),
+            color: AdminTheme.primaryBlue.withOpacity(0.1),
             borderRadius: BorderRadius.circular(14),
           ),
           child: Icon(
             icon,
-            color: const Color(0xFF2196F3),
+            color: AdminTheme.primaryBlue,
             size: 24,
           ),
         ),
@@ -827,7 +825,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 style: const TextStyle(
                   fontSize: 18,
                   fontWeight: FontWeight.w700,
-                  color: Color(0xFF1E293B),
+                  color: AdminTheme.textPrimary,
                 ),
               ),
               const SizedBox(height: 4),
@@ -835,7 +833,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 description,
                 style: TextStyle(
                   fontSize: 14,
-                  color: Colors.grey.shade600,
+                  color: AdminTheme.textMuted,
                   height: 1.5,
                 ),
               ),

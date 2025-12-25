@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/auth_provider.dart';
+import '../utils/admin_theme.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -30,30 +31,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            'Settings',
-            style: TextStyle(
-              fontSize: 24,
-              fontWeight: FontWeight.bold,
-              color: Color(0xFF2C3E50),
-            ),
+          const PageHeader(
+            icon: Icons.settings,
+            title: 'Settings',
+            subtitle: 'Configure your masjid settings',
           ),
-          const SizedBox(height: 8),
-          Text(
-            'Configure your masjid settings',
-            style: TextStyle(
-              color: Colors.grey[600],
-              fontSize: 16,
-            ),
-          ),
-          const SizedBox(height: 30),
 
           // Masjid Information
-          Card(
-            elevation: 2,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
+          Container(
+            decoration: AdminTheme.cardDecoration,
             child: Padding(
               padding: const EdgeInsets.all(20),
               child: Column(
@@ -61,47 +47,39 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 children: [
                   const Text(
                     'Masjid Information',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w600,
-                      color: Color(0xFF2C3E50),
-                    ),
+                    style: AdminTheme.headingMedium,
                   ),
                   const SizedBox(height: 20),
 
                   TextFormField(
-                    decoration: const InputDecoration(
+                    decoration: AdminTheme.inputDecoration(
                       labelText: 'Masjid Name',
-                      border: OutlineInputBorder(),
-                      prefixIcon: Icon(Icons.mosque),
+                      prefixIcon: Icons.mosque,
                     ),
                     initialValue: auth.masjidName,
                   ),
                   const SizedBox(height: 15),
 
                   TextFormField(
-                    decoration: const InputDecoration(
+                    decoration: AdminTheme.inputDecoration(
                       labelText: 'Address',
-                      border: OutlineInputBorder(),
-                      prefixIcon: Icon(Icons.location_on),
+                      prefixIcon: Icons.location_on,
                     ),
                   ),
                   const SizedBox(height: 15),
 
                   TextFormField(
-                    decoration: const InputDecoration(
+                    decoration: AdminTheme.inputDecoration(
                       labelText: 'Phone Number',
-                      border: OutlineInputBorder(),
-                      prefixIcon: Icon(Icons.phone),
+                      prefixIcon: Icons.phone,
                     ),
                   ),
                   const SizedBox(height: 15),
 
                   TextFormField(
-                    decoration: const InputDecoration(
+                    decoration: AdminTheme.inputDecoration(
                       labelText: 'Email',
-                      border: OutlineInputBorder(),
-                      prefixIcon: Icon(Icons.email),
+                      prefixIcon: Icons.email,
                     ),
                   ),
                 ],
@@ -111,14 +89,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
           const SizedBox(height: 30),
 
-          const SizedBox(height: 30),
-
           // Account Settings
-          Card(
-            elevation: 2,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
+          Container(
+            decoration: AdminTheme.cardDecoration,
             child: Padding(
               padding: const EdgeInsets.all(20),
               child: Column(
@@ -126,30 +99,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 children: [
                   const Text(
                     'Account Settings',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w600,
-                      color: Color(0xFF2C3E50),
-                    ),
+                    style: AdminTheme.headingMedium,
                   ),
                   const SizedBox(height: 20),
                   ListTile(
-                    leading: const Icon(Icons.person, color: Color(0xFF2196F3)),
+                    leading: const Icon(Icons.person, color: AdminTheme.primaryBlue),
                     title: const Text('Edit Profile'),
                     trailing: const Icon(Icons.chevron_right),
                     onTap: () {},
                   ),
                   const Divider(),
                   ListTile(
-                    leading: const Icon(Icons.lock, color: Color(0xFF2196F3)),
+                    leading: const Icon(Icons.lock, color: AdminTheme.primaryBlue),
                     title: const Text('Change Password'),
                     trailing: const Icon(Icons.chevron_right),
                     onTap: () {},
                   ),
                   const Divider(),
                   ListTile(
-                    leading:
-                        const Icon(Icons.notifications, color: Color(0xFF2196F3)),
+                    leading: const Icon(Icons.notifications, color: AdminTheme.primaryBlue),
                     title: const Text('Notification Settings'),
                     trailing: const Icon(Icons.chevron_right),
                     onTap: () {},
@@ -162,11 +130,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 30),
 
           // Danger Zone
-          Card(
-            elevation: 2,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-              side: const BorderSide(color: Colors.red, width: 1),
+          Container(
+            decoration: BoxDecoration(
+              color: AdminTheme.backgroundCard,
+              borderRadius: AdminTheme.borderRadiusMedium,
+              border: Border.all(color: AdminTheme.accentRed, width: 1),
+              boxShadow: AdminTheme.shadowLight,
             ),
             child: Padding(
               padding: const EdgeInsets.all(20),
@@ -178,36 +147,36 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     style: TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.w600,
-                      color: Colors.red,
+                      color: AdminTheme.accentRed,
                     ),
                   ),
                   const SizedBox(height: 10),
-                  Text(
+                  const Text(
                     'Irreversible actions',
-                    style: TextStyle(color: Colors.grey[600]),
+                    style: AdminTheme.bodyMedium,
                   ),
                   const SizedBox(height: 20),
                   OutlinedButton.icon(
                     onPressed: () {},
-                    icon: const Icon(Icons.delete, color: Colors.red),
+                    icon: const Icon(Icons.delete, color: AdminTheme.accentRed),
                     label: const Text(
                       'Delete All Announcements',
-                      style: TextStyle(color: Colors.red),
+                      style: TextStyle(color: AdminTheme.accentRed),
                     ),
                     style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: Colors.red),
+                      side: const BorderSide(color: AdminTheme.accentRed),
                     ),
                   ),
                   const SizedBox(height: 10),
                   OutlinedButton.icon(
                     onPressed: () {},
-                    icon: const Icon(Icons.restore, color: Colors.red),
+                    icon: const Icon(Icons.restore, color: AdminTheme.accentRed),
                     label: const Text(
                       'Reset All Settings',
-                      style: TextStyle(color: Colors.red),
+                      style: TextStyle(color: AdminTheme.accentRed),
                     ),
                     style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: Colors.red),
+                      side: const BorderSide(color: AdminTheme.accentRed),
                     ),
                   ),
                 ],
@@ -224,16 +193,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
                     content: Text('Settings saved successfully'),
-                    backgroundColor: Color(0xFF2196F3),
+                    backgroundColor: AdminTheme.primaryBlue,
                   ),
                 );
               },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF2196F3),
-                foregroundColor: Colors.white,
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 40, vertical: 15),
-              ),
+              style: AdminTheme.primaryButtonStyle,
               child: const Text('Save All Changes'),
             ),
           ),

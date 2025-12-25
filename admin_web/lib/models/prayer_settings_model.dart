@@ -130,11 +130,17 @@ class SpecialTimes {
   final int imsakOffsetMinutes; // relative to Fajr
   final int iftarOffsetMinutes; // relative to Maghrib
   final int taraweehOffsetMinutes; // relative to Isha
+  final bool ramadanModeEnabled;
+  final String? suhoorEndTime; // HH:mm format - when Suhoor ends
+  final String? iftarTime; // HH:mm format - when Iftar starts
 
   const SpecialTimes({
     this.imsakOffsetMinutes = -15,
     this.iftarOffsetMinutes = 0,
     this.taraweehOffsetMinutes = 0,
+    this.ramadanModeEnabled = false,
+    this.suhoorEndTime,
+    this.iftarTime,
   });
 
   factory SpecialTimes.fromMap(Map<String, dynamic> map) {
@@ -142,6 +148,9 @@ class SpecialTimes {
       imsakOffsetMinutes: map['imsakOffsetMinutes'] is int ? map['imsakOffsetMinutes'] as int : -15,
       iftarOffsetMinutes: map['iftarOffsetMinutes'] is int ? map['iftarOffsetMinutes'] as int : 0,
       taraweehOffsetMinutes: map['taraweehOffsetMinutes'] is int ? map['taraweehOffsetMinutes'] as int : 0,
+      ramadanModeEnabled: map['ramadanModeEnabled'] == true,
+      suhoorEndTime: map['suhoorEndTime'] is String ? map['suhoorEndTime'] as String : null,
+      iftarTime: map['iftarTime'] is String ? map['iftarTime'] as String : null,
     );
   }
 
@@ -150,6 +159,9 @@ class SpecialTimes {
       'imsakOffsetMinutes': imsakOffsetMinutes,
       'iftarOffsetMinutes': iftarOffsetMinutes,
       'taraweehOffsetMinutes': taraweehOffsetMinutes,
+      'ramadanModeEnabled': ramadanModeEnabled,
+      if (suhoorEndTime != null) 'suhoorEndTime': suhoorEndTime,
+      if (iftarTime != null) 'iftarTime': iftarTime,
     };
   }
 
@@ -157,11 +169,17 @@ class SpecialTimes {
     int? imsakOffsetMinutes,
     int? iftarOffsetMinutes,
     int? taraweehOffsetMinutes,
+    bool? ramadanModeEnabled,
+    String? suhoorEndTime,
+    String? iftarTime,
   }) {
     return SpecialTimes(
       imsakOffsetMinutes: imsakOffsetMinutes ?? this.imsakOffsetMinutes,
       iftarOffsetMinutes: iftarOffsetMinutes ?? this.iftarOffsetMinutes,
       taraweehOffsetMinutes: taraweehOffsetMinutes ?? this.taraweehOffsetMinutes,
+      ramadanModeEnabled: ramadanModeEnabled ?? this.ramadanModeEnabled,
+      suhoorEndTime: suhoorEndTime ?? this.suhoorEndTime,
+      iftarTime: iftarTime ?? this.iftarTime,
     );
   }
 }

@@ -1,9 +1,12 @@
-import 'package:flutter/foundation.dart';
+import 'dart:async';
+import 'dart:math';
+
 import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../utils/web_location_stub.dart'
-    if (dart.library.html) '../utils/web_location_web.dart';
+// We'll use a simple embedded TV display widget
+import 'embedded_tv_display.dart';
 
 class TVConnectionScreen extends StatefulWidget {
   const TVConnectionScreen({super.key});
@@ -13,145 +16,223 @@ class TVConnectionScreen extends StatefulWidget {
 }
 
 class _TVConnectionScreenState extends State<TVConnectionScreen> {
-  final _urlController = TextEditingController();
+  String? _pairingCode;
   bool _loading = true;
+  DateTime? _expiresAt;
+  Timer? _timer;
+  StreamSubscription? _pairingSub;
+  static const Duration _pairingExpiry = Duration(minutes: 10);
+  static const String _tvPairingCodeStorageKey = 'tvPairingCode';
+  static const String _tvMasjidIdStorageKey = 'tvMasjidId';
 
   @override
   void initState() {
     super.initState();
-    // ignore: unawaited_futures
-    _load();
+    _init();
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
   }
 
   @override
   void dispose() {
-    _urlController.dispose();
+    _timer?.cancel();
+    _pairingSub?.cancel();
     super.dispose();
   }
 
-  Future<void> _load() async {
+  Future<void> _init() async {
+    // Check if already paired
     final prefs = await SharedPreferences.getInstance();
-    final saved = (prefs.getString('tvDisplayBaseUrl') ?? '').trim();
+    final savedMasjidId = (prefs.getString(_tvMasjidIdStorageKey) ?? '').trim();
+    
+    if (savedMasjidId.isNotEmpty && mounted) {
+      // Already paired, go to TV display
+      _goToTVDisplay(savedMasjidId);
+      return;
+    }
+    
+    // Check for existing code
+    final savedCode = (prefs.getString(_tvPairingCodeStorageKey) ?? '').trim();
+    if (savedCode.length == 6) {
+      _pairingCode = savedCode;
+      _expiresAt = DateTime.now().add(_pairingExpiry);
+      _listenForClaim(savedCode);
+      setState(() => _loading = false);
+      return;
+    }
+    
+    await _generateCode();
+  }
 
-    final current = Uri.base;
-    final currentHost = current.host.toLowerCase();
-    final isLocalhost =
-        currentHost == 'localhost' || currentHost == '127.0.0.1';
-
-    String suggested = '';
-    if (saved.isNotEmpty) {
-      suggested = saved;
-    } else if (isLocalhost && current.hasPort) {
-      suggested = current
-          .replace(
-            path: '/',
-            query: '',
-            fragment: '',
-            port: current.port + 1,
-          )
-          .origin;
+  Future<void> _generateCode() async {
+    setState(() => _loading = true);
+    
+    final code = _createPairingCode();
+    final prefs = await SharedPreferences.getInstance();
+    
+    try {
+      await FirebaseFirestore.instance.collection('tv_pairs').doc(code).set({
+        'code': code,
+        'claimed': false,
+        'createdAt': FieldValue.serverTimestamp(),
+        'expiresInMinutes': _pairingExpiry.inMinutes,
+      }, SetOptions(merge: true));
+    } catch (e) {
+      debugPrint('Error creating pairing doc: $e');
     }
 
+    await prefs.setString(_tvPairingCodeStorageKey, code);
+    
     if (!mounted) return;
     setState(() {
-      _urlController.text = suggested;
+      _pairingCode = code;
+      _expiresAt = DateTime.now().add(_pairingExpiry);
       _loading = false;
+    });
+    
+    _listenForClaim(code);
+  }
+
+  String _createPairingCode() {
+    final n = Random().nextInt(1000000);
+    return n.toString().padLeft(6, '0');
+  }
+
+  void _listenForClaim(String code) {
+    _pairingSub?.cancel();
+    _pairingSub = FirebaseFirestore.instance
+        .collection('tv_pairs')
+        .doc(code)
+        .snapshots()
+        .listen((doc) async {
+      final data = doc.data();
+      if (data == null) return;
+      
+      final masjidId = (data['masjidId'] ?? '').toString().trim();
+      if (masjidId.isEmpty) return;
+      
+      // Code was claimed! Save masjidId and go to TV display
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_tvMasjidIdStorageKey, masjidId);
+      await prefs.remove(_tvPairingCodeStorageKey);
+      
+      if (mounted) {
+        _goToTVDisplay(masjidId);
+      }
     });
   }
 
-  Future<void> _openTv() async {
+  void _goToTVDisplay(String masjidId) {
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(
+        builder: (context) => TVDisplayScreen(masjidId: masjidId),
+      ),
+    );
+  }
+
+  Future<void> _newCode() async {
+    _pairingSub?.cancel();
     final prefs = await SharedPreferences.getInstance();
-
-    final raw = _urlController.text.trim();
-    if (raw.isEmpty) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Enter the TV Display URL first.')),
-      );
-      return;
-    }
-
-    final withScheme = raw.contains('://') ? raw : 'http://$raw';
-
-    Uri parsed;
-    try {
-      parsed = Uri.parse(withScheme);
-    } catch (_) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Invalid TV URL.')),
-      );
-      return;
-    }
-
-    // Normalize to origin + root path.
-    final base = parsed.replace(
-      path: '/',
-      query: '',
-      fragment: '',
-    );
-
-    await prefs.setString('tvDisplayBaseUrl', base.origin);
-
-    final tvUrl = base.replace(
-      path: '/',
-      queryParameters: const <String, String>{
-        'mode': 'tv',
-        'reset': '1',
-      },
-    ).toString();
-
-    if (kIsWeb) {
-      WebLocation.assign(tvUrl);
-      return;
-    }
-
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Open this URL in a browser: $tvUrl')),
-    );
+    await prefs.remove(_tvPairingCodeStorageKey);
+    await _generateCode();
   }
 
   @override
   Widget build(BuildContext context) {
+    final remaining = _expiresAt?.difference(DateTime.now());
+    final minutesLeft = remaining == null
+        ? null
+        : (remaining.inSeconds <= 0 ? 0 : (remaining.inSeconds / 60).ceil());
+
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Connect TV Display'),
-      ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : Center(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 520),
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      const Text(
-                        'Enter the URL where the TV display app is running.',
-                        style: TextStyle(fontSize: 16),
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: _urlController,
-                        decoration: const InputDecoration(
-                          labelText: 'TV Display URL',
-                          hintText: 'http://localhost:12345',
-                          border: OutlineInputBorder(),
+      backgroundColor: const Color(0xFFF5F5F5),
+      body: SafeArea(
+        child: Center(
+          child: _loading
+              ? const CircularProgressIndicator()
+              : ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 720),
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Card(
+                      elevation: 2,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16)),
+                      child: Padding(
+                        padding: const EdgeInsets.all(32),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.tv,
+                                size: 64, color: Color(0xFF1976D2)),
+                            const SizedBox(height: 16),
+                            const Text(
+                              'Connect this TV',
+                              style: TextStyle(
+                                  fontSize: 28, fontWeight: FontWeight.w700),
+                            ),
+                            const SizedBox(height: 12),
+                            Text(
+                              'Enter this code in Admin Dashboard → TV Display Settings',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                  color: Colors.grey[700], fontSize: 16),
+                            ),
+                            const SizedBox(height: 24),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 32, vertical: 20),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(14),
+                                border: Border.all(
+                                    color: const Color(0xFF1976D2), width: 3),
+                              ),
+                              child: Text(
+                                _pairingCode ?? '------',
+                                style: const TextStyle(
+                                  fontSize: 64,
+                                  letterSpacing: 8,
+                                  fontWeight: FontWeight.w800,
+                                  color: Color(0xFF1976D2),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            if (minutesLeft != null)
+                              Text(
+                                'Expires in ~$minutesLeft min',
+                                style: TextStyle(
+                                    color: Colors.grey[700], fontSize: 14),
+                              ),
+                            const SizedBox(height: 8),
+                            Text(
+                              'Waiting for connection...',
+                              style: TextStyle(
+                                  color: Colors.grey[600],
+                                  fontSize: 14,
+                                  fontStyle: FontStyle.italic),
+                            ),
+                            const SizedBox(height: 24),
+                            OutlinedButton.icon(
+                              onPressed: _newCode,
+                              icon: const Icon(Icons.refresh),
+                              label: const Text('Generate New Code'),
+                              style: OutlinedButton.styleFrom(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 24, vertical: 12),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
-                      const SizedBox(height: 12),
-                      FilledButton(
-                        onPressed: _openTv,
-                        child: const Text('Open TV Pairing Screen'),
-                      ),
-                    ],
+                    ),
                   ),
                 ),
-              ),
-            ),
+        ),
+      ),
     );
   }
 }
