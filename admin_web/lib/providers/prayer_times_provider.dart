@@ -1,8 +1,13 @@
 import 'dart:convert';
+import 'dart:async';
+import 'package:timezone/timezone.dart' as tz;
+import 'package:timezone/data/latest.dart' as tz_data;
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import '../services/prayer_api_service.dart';
+import '../services/timezone_service.dart';
 import '../models/prayer_settings_model.dart';
 
 class PrayerTimesProvider with ChangeNotifier {
@@ -17,6 +22,99 @@ class PrayerTimesProvider with ChangeNotifier {
 
   PrayerTimesProvider() {
     _initializeFirebase();
+    _startMasjidClock();
+  }
+  
+
+  // Masjid-local clock
+  Timer? _masjidClockTimer;
+  DateTime _masjidNow = DateTime.now();
+  DateTime? _lastApiFetchTime;
+  DateTime? _apiFetchedTime;
+  String? _resolvedTimezoneId;
+
+  DateTime get masjidNow => _masjidNow;
+
+  void _startMasjidClock() {
+    // Initialize timezone database once
+    try {
+      tz_data.initializeTimeZones();
+    } catch (_) {}
+
+    _masjidClockTimer?.cancel();
+    _masjidClockTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
+      await _updateMasjidTime();
+    });
+    // Also run immediately
+    _updateMasjidTime();
+  }
+
+  Future<void> _updateMasjidTime() async {
+    try {
+      final loc = _prayerSettings?.location;
+      if (loc == null) {
+        _masjidNow = DateTime.now();
+        notifyListeners();
+        return;
+      }
+
+      // Determine timezone ID
+      String? tzId = loc.timezone.trim();
+      if (tzId.isEmpty || tzId.toLowerCase() == 'auto') {
+        // Try to guess from country
+        tzId = TimezoneService.guessTimezoneFromCountry(loc.country);
+        if (tzId != null && tzId != _resolvedTimezoneId) {
+          _resolvedTimezoneId = tzId;
+          _apiFetchedTime = null; // force refetch
+          _lastApiFetchTime = null;
+        }
+      } else {
+        _resolvedTimezoneId = tzId;
+      }
+
+      if (_resolvedTimezoneId == null || _resolvedTimezoneId!.isEmpty) {
+        _masjidNow = DateTime.now();
+        notifyListeners();
+        return;
+      }
+
+      // Try tz package first (instant, no API)
+      try {
+        final location = tz.getLocation(_resolvedTimezoneId!);
+        _masjidNow = tz.TZDateTime.now(location);
+        notifyListeners();
+        return;
+      } catch (_) {
+        // tz package doesn't have this timezone, fall back to API
+      }
+
+      // Use WorldTimeAPI - fetch every 60 seconds to avoid rate limits
+      final now = DateTime.now();
+      final shouldFetch = _lastApiFetchTime == null ||
+          now.difference(_lastApiFetchTime!).inSeconds >= 60;
+
+      if (shouldFetch) {
+        final apiTime = await TimezoneService.getCurrentTimeForTimezone(_resolvedTimezoneId!);
+        if (apiTime != null) {
+          _apiFetchedTime = apiTime;
+          _lastApiFetchTime = now;
+        }
+      }
+
+      if (_apiFetchedTime != null && _lastApiFetchTime != null) {
+        // Compute current masjid time by adding elapsed seconds since last API fetch
+        final elapsed = now.difference(_lastApiFetchTime!);
+        _masjidNow = _apiFetchedTime!.add(elapsed);
+      } else {
+        _masjidNow = DateTime.now();
+      }
+
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Error updating masjid time: $e');
+      _masjidNow = DateTime.now();
+      notifyListeners();
+    }
   }
 
   void _initializeFirebase() {
@@ -368,6 +466,58 @@ class PrayerTimesProvider with ChangeNotifier {
       lastUpdated: DateTime.now(),
     );
 
+    // If coordinates provided and timezone is Auto, attempt to resolve via APIs
+    try {
+      if ((newLocation.latitude != 0.0 || newLocation.longitude != 0.0) &&
+          (newLocation.timezone.isEmpty || newLocation.timezone.toLowerCase() == 'auto')) {
+        // Load API keys from .env asset if present. Keys: GOOGLE_TIMEZONE_API_KEY, TIMEZONEDB_API_KEY
+        String? googleKey;
+        String? tzdbKey;
+        try {
+          final env = await rootBundle.loadString('.env');
+          for (final line in env.split('\n')) {
+            final trimmed = line.trim();
+            if (trimmed.isEmpty || trimmed.startsWith('#')) continue;
+            final parts = trimmed.split('=');
+            if (parts.length < 2) continue;
+            final key = parts[0].trim();
+            final value = parts.sublist(1).join('=').trim();
+            if (key == 'GOOGLE_TIMEZONE_API_KEY') googleKey = value;
+            if (key == 'TIMEZONEDB_API_KEY') tzdbKey = value;
+          }
+        } catch (_) {
+          // ignore - asset not present or unreadable
+        }
+
+        // Attempt Google API if key present
+        TimezoneResult? res;
+        if (googleKey != null && googleKey.isNotEmpty) {
+          final ts = DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000;
+          res = await TimezoneService.getTimezoneFromGoogle(newLocation.latitude, newLocation.longitude, ts, googleKey);
+        }
+        // Fallback to TimeZoneDB
+        if (res == null && tzdbKey != null && tzdbKey.isNotEmpty) {
+          res = await TimezoneService.getTimezoneFromTimeZoneDb(newLocation.latitude, newLocation.longitude, tzdbKey);
+        }
+
+        // Final fallback: use free coordinate-based service (timeapi.io)
+        if (res == null) {
+          res = await TimezoneService.getTimezoneFromFreeService(
+              newLocation.latitude, newLocation.longitude);
+        }
+
+        if (res != null) {
+          final tzId = res.timezoneId;
+          _prayerSettings = _prayerSettings!.copyWith(
+            location: newLocation.copyWith(timezone: tzId),
+            lastUpdated: DateTime.now(),
+          );
+        }
+      }
+    } catch (e) {
+      debugPrint('Timezone lookup failed: $e');
+    }
+
     await _saveToFirestore();
     await _saveToLocalStorage();
     notifyListeners();
@@ -435,5 +585,11 @@ class PrayerTimesProvider with ChangeNotifier {
   void clearError() {
     _errorMessage = null;
     notifyListeners();
+  }
+  
+  @override
+  void dispose() {
+    _masjidClockTimer?.cancel();
+    super.dispose();
   }
 }

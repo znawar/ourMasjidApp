@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
@@ -52,9 +53,10 @@ class PrayerApiService {
         'adjustment=$adjustment'
       );
 
-      print('API Call: $url'); // Debug
 
-      final response = await http.get(url);
+      print('AlAdhan API Call: $url'); // Debug
+
+      final response = await http.get(url).timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
@@ -73,14 +75,19 @@ class PrayerApiService {
             'Midnight': timings['Midnight'] ?? '00:00',
           };
         } else {
-          throw Exception('API Error: ${data['data']}');
+          print('AlAdhan API responded with non-success code: ${data['code']} body: ${response.body}');
+          return getDefaultPrayerTimes();
         }
       } else {
-        throw Exception('HTTP Error: ${response.statusCode}');
+        print('AlAdhan HTTP Error: ${response.statusCode} body: ${response.body}');
+        return getDefaultPrayerTimes();
       }
+    } on TimeoutException catch (e) {
+      print('AlAdhan API Timeout: $e');
+      return getDefaultPrayerTimes();
     } catch (e) {
-      print('Prayer API Error: $e');
-      throw Exception('Failed to fetch prayer times: $e');
+      print('AlAdhan API Error: $e');
+      return getDefaultPrayerTimes();
     }
   }
 
@@ -107,18 +114,17 @@ class PrayerApiService {
         'method=$methodNumber&'
         'school=$schoolNumber&'
         'latitudeAdjustmentMethod=$adjustmentMethod&'
-        'timezonestring=Auto&'
         'adjustment=$adjustment'
       );
 
-      final response = await http.get(url);
+      final response = await http.get(url).timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
-        
+
         if (data['code'] == 200) {
           final timings = data['data']['timings'];
-          
+
           return {
             'Fajr': timings['Fajr'] ?? '05:00',
             'Sunrise': timings['Sunrise'] ?? '06:00',
@@ -130,14 +136,19 @@ class PrayerApiService {
             'Midnight': timings['Midnight'] ?? '00:00',
           };
         } else {
-          throw Exception('API Error: ${data['data']}');
+          print('AlAdhan API responded with non-success code: ${data['code']} body: ${response.body}');
+          return getDefaultPrayerTimes();
         }
       } else {
-        throw Exception('HTTP Error: ${response.statusCode}');
+        print('AlAdhan HTTP Error: ${response.statusCode} body: ${response.body}');
+        return getDefaultPrayerTimes();
       }
+    } on TimeoutException catch (e) {
+      print('AlAdhan API Timeout: $e');
+      return getDefaultPrayerTimes();
     } catch (e) {
-      print('Prayer API Error: $e');
-      throw Exception('Failed to fetch prayer times: $e');
+      print('AlAdhan API Error: $e');
+      return getDefaultPrayerTimes();
     }
   }
 

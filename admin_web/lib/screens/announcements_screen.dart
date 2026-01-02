@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../providers/prayer_times_provider.dart';
 import 'package:admin_web/providers/announcements_provider.dart';
 import 'package:admin_web/utils/admin_theme.dart';
 
@@ -39,10 +40,15 @@ class _AnnouncementsScreenState extends State<AnnouncementsScreen> {
     final provider = Provider.of<AnnouncementsProvider>(context, listen: false);
     final scaffoldMessenger = ScaffoldMessenger.of(context);
     
-    // Calculate expiration date if not permanent
+    // Calculate expiration date if not permanent (use masjid-local time)
     DateTime? expiresAt;
     if (!_isPermanent) {
-      expiresAt = DateTime.now().add(Duration(days: _durationDays));
+      try {
+        final p = Provider.of<PrayerTimesProvider>(context, listen: false);
+        expiresAt = p.masjidNow.add(Duration(days: _durationDays));
+      } catch (_) {
+        expiresAt = DateTime.now().add(Duration(days: _durationDays));
+      }
     }
     
     try {
@@ -336,7 +342,13 @@ class _AnnouncementsScreenState extends State<AnnouncementsScreen> {
   }
   
   String _getExpirationDateText() {
-    final expirationDate = DateTime.now().add(Duration(days: _durationDays));
+    DateTime expirationDate;
+    try {
+      final p = Provider.of<PrayerTimesProvider>(context, listen: false);
+      expirationDate = p.masjidNow.add(Duration(days: _durationDays));
+    } catch (_) {
+      expirationDate = DateTime.now().add(Duration(days: _durationDays));
+    }
     final months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
     return '${months[expirationDate.month - 1]} ${expirationDate.day}, ${expirationDate.year}';
   }
@@ -646,7 +658,13 @@ class _AnnouncementsScreenState extends State<AnnouncementsScreen> {
   }
   
   String _getRemainingTime(DateTime expiresAt) {
-    final now = DateTime.now();
+    DateTime now;
+    try {
+      final p = Provider.of<PrayerTimesProvider>(context, listen: false);
+      now = p.masjidNow;
+    } catch (_) {
+      now = DateTime.now();
+    }
     final difference = expiresAt.difference(now);
     
     if (difference.isNegative) return 'Expired';

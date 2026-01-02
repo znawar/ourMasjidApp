@@ -42,7 +42,6 @@ class _LoginScreenState extends State<LoginScreen> {
         _passwordController.text.trim(),
         _masjidNameController.text.trim(),
       );
-      
       // Login successful - navigate to Admin Dashboard
       if (mounted) {
         Navigator.pushReplacement(
@@ -62,14 +61,17 @@ class _LoginScreenState extends State<LoginScreen> {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Login failed: ${e.toString()}'),
-            backgroundColor: AdminTheme.accentRed,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Login Failed'),
+            content: const Text('Wrong password, email, or masjid name.'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('OK'),
+              ),
+            ],
           ),
         );
         setState(() => _isLoading = false);

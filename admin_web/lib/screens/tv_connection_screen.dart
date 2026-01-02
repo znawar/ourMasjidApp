@@ -4,6 +4,8 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:provider/provider.dart';
+import '../providers/prayer_times_provider.dart';
 
 // We'll use a simple embedded TV display widget
 import 'embedded_tv_display.dart';
@@ -56,7 +58,12 @@ class _TVConnectionScreenState extends State<TVConnectionScreen> {
     final savedCode = (prefs.getString(_tvPairingCodeStorageKey) ?? '').trim();
     if (savedCode.length == 6) {
       _pairingCode = savedCode;
-      _expiresAt = DateTime.now().add(_pairingExpiry);
+      try {
+        final p = Provider.of<PrayerTimesProvider>(context, listen: false);
+        _expiresAt = p.masjidNow.add(_pairingExpiry);
+      } catch (_) {
+        _expiresAt = DateTime.now().add(_pairingExpiry);
+      }
       _listenForClaim(savedCode);
       setState(() => _loading = false);
       return;
@@ -87,7 +94,12 @@ class _TVConnectionScreenState extends State<TVConnectionScreen> {
     if (!mounted) return;
     setState(() {
       _pairingCode = code;
-      _expiresAt = DateTime.now().add(_pairingExpiry);
+      try {
+        final p = Provider.of<PrayerTimesProvider>(context, listen: false);
+        _expiresAt = p.masjidNow.add(_pairingExpiry);
+      } catch (_) {
+        _expiresAt = DateTime.now().add(_pairingExpiry);
+      }
       _loading = false;
     });
     
@@ -112,10 +124,11 @@ class _TVConnectionScreenState extends State<TVConnectionScreen> {
       final masjidId = (data['masjidId'] ?? '').toString().trim();
       if (masjidId.isEmpty) return;
       
-      // Code was claimed! Save masjidId and go to TV display
+      // Code was claimed! Save masjidId and keep pairing code so the TV
+      // can detect when an admin removes the pairing and disconnect.
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(_tvMasjidIdStorageKey, masjidId);
-      await prefs.remove(_tvPairingCodeStorageKey);
+      await prefs.setString(_tvPairingCodeStorageKey, code);
       
       if (mounted) {
         _goToTVDisplay(masjidId);
@@ -141,7 +154,14 @@ class _TVConnectionScreenState extends State<TVConnectionScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final remaining = _expiresAt?.difference(DateTime.now());
+    DateTime now;
+    try {
+      final p = Provider.of<PrayerTimesProvider>(context, listen: false);
+      now = p.masjidNow;
+    } catch (_) {
+      now = DateTime.now();
+    }
+    final remaining = _expiresAt?.difference(now);
     final minutesLeft = remaining == null
         ? null
         : (remaining.inSeconds <= 0 ? 0 : (remaining.inSeconds / 60).ceil());

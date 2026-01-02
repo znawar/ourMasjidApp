@@ -4,6 +4,8 @@ import 'package:admin_web/providers/prayer_times_provider.dart';
 import 'package:admin_web/widgets/settings_summary_card.dart';
 import 'package:admin_web/models/prayer_settings_model.dart';
 import 'package:admin_web/services/prayer_api_service.dart';
+import 'package:admin_web/services/location_autocomplete_service.dart';
+import 'dart:async';
 import 'package:admin_web/utils/admin_theme.dart';
 
 enum _PrayerWizardPage {
@@ -229,7 +231,8 @@ class _ChoiceCard extends StatelessWidget {
                   top: 0,
                   right: 0,
                   child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                     decoration: BoxDecoration(
                       color: Colors.grey.shade200,
                       borderRadius: BorderRadius.circular(999),
@@ -373,6 +376,34 @@ class PrayerTimesScreen extends StatefulWidget {
 }
 
 class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
+    // --- Calculation helpers for Ramadan summary ---
+    String? _calculateSuhoorEndTime(PrayerTimesProvider provider, SpecialTimes special) {
+      final fajr = provider.prayerSettings?.prayerTimes['Fajr']?.adhan;
+      final offset = special.imsakOffsetMinutes;
+      if (fajr == null || fajr.isEmpty) return null;
+      return _addMinutesToTime(fajr, offset);
+    }
+
+    String? _calculateIftarTime(PrayerTimesProvider provider, SpecialTimes special) {
+      final maghrib = provider.prayerSettings?.prayerTimes['Maghrib']?.adhan;
+      final offset = special.iftarOffsetMinutes;
+      if (maghrib == null || maghrib.isEmpty) return null;
+      return _addMinutesToTime(maghrib, offset);
+    }
+
+    String _addMinutesToTime(String time, int minutesToAdd) {
+      // time is expected in HH:mm
+      final parts = time.split(':');
+      if (parts.length != 2) return time;
+      int hour = int.tryParse(parts[0]) ?? 0;
+      int minute = int.tryParse(parts[1]) ?? 0;
+      int totalMinutes = hour * 60 + minute + minutesToAdd;
+      if (totalMinutes < 0) totalMinutes += 24 * 60;
+      totalMinutes = totalMinutes % (24 * 60);
+      final newHour = (totalMinutes ~/ 60).toString().padLeft(2, '0');
+      final newMinute = (totalMinutes % 60).toString().padLeft(2, '0');
+      return '$newHour:$newMinute';
+    }
   int _selectedTab = 0;
   final Map<String, TextEditingController> _adhanControllers = {};
   final Map<String, TextEditingController> _iqamahControllers = {};
@@ -380,12 +411,21 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
   final Map<String, bool> _useDelayControllers = {};
 
   DateTime? _lastSyncedLastUpdated;
-  
+
   // Location controllers
   late TextEditingController _cityController;
   late TextEditingController _countryController;
   late TextEditingController _latitudeController;
   late TextEditingController _longitudeController;
+
+  // Autocomplete state
+  List<String> _countries = [];
+  bool _loadingCountries = false;
+  List<String> _cityApiSuggestions = [];
+  bool _loadingCitySuggestions = false;
+  Timer? _cityDebounce;
+  bool _loadingCountryCities = false;
+  String? _selectedCountryForCache;
 
   @override
   void initState() {
@@ -396,7 +436,7 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
 
   void _initializeLocationControllers() {
     final provider = Provider.of<PrayerTimesProvider>(context, listen: false);
-    
+
     _cityController = TextEditingController(
       text: provider.prayerSettings?.location.city ?? '',
     );
@@ -413,19 +453,109 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
           ? (provider.prayerSettings?.location.longitude ?? 0.0).toString()
           : '',
     );
+
+    // Load countries list
+    _loadCountries();
+  }
+
+  Future<void> _loadCountries() async {
+    setState(() {
+      _loadingCountries = true;
+    });
+    try {
+      final list = await LocationAutocompleteService.getCountries();
+      setState(() {
+        _countries = list;
+      });
+    } catch (_) {}
+    setState(() {
+      _loadingCountries = false;
+    });
+  }
+
+  Future<void> _prefetchCountryCities(String country) async {
+    final trimmed = country.trim();
+    if (trimmed.isEmpty) return;
+    setState(() {
+      _loadingCountryCities = true;
+    });
+    try {
+      final list = await LocationAutocompleteService.getCitiesForCountry(trimmed);
+      setState(() {
+        _cityApiSuggestions = list.map((e) => (e['display'] ?? '').toString()).toList();
+        _selectedCountryForCache = trimmed.toLowerCase();
+      });
+      debugPrint('Prefetched ${_cityApiSuggestions.length} cities for $trimmed');
+    } catch (e) {
+      debugPrint('Prefetch country cities failed for $trimmed: $e');
+    }
+    setState(() {
+      _loadingCountryCities = false;
+    });
+  }
+
+  void _searchCitiesDebounced(String query) {
+    _cityDebounce?.cancel();
+    _cityDebounce = Timer(const Duration(milliseconds: 400), () async {
+      if (query.trim().isEmpty) {
+        setState(() => _cityApiSuggestions = []);
+        return;
+      }
+      setState(() => _loadingCitySuggestions = true);
+      final country = _countryController.text.trim();
+      debugPrint('City search: query="$query" country="$country"');
+
+      // If we have a prefetched list for this country, filter locally (instant)
+      try {
+        final key = country.trim().toLowerCase();
+        final cached = await LocationAutocompleteService.getCitiesForCountry(country);
+        if (cached.isNotEmpty) {
+          final q = query.toLowerCase();
+          final matches = cached.where((e) {
+            final display = (e['display'] ?? '').toString().toLowerCase();
+            return display.contains(q) || (e['name'] ?? '').toString().toLowerCase().contains(q);
+          }).map((e) => (e['display'] ?? '').toString()).toList();
+          setState(() {
+            _cityApiSuggestions = matches;
+            _loadingCitySuggestions = false;
+            _selectedCountryForCache = key;
+          });
+          debugPrint('Using cached city list for "$country" -> ${matches.length} matches');
+          return;
+        }
+      } catch (_) {}
+
+      // Otherwise fall back to live search
+      try {
+        final results = await LocationAutocompleteService.searchCities(query, country: country.isEmpty ? null : country, limit: 200);
+        debugPrint('City search results for "$query": ${results.length}');
+        setState(() {
+          _cityApiSuggestions = results;
+          _loadingCitySuggestions = false;
+        });
+      } catch (e) {
+        debugPrint('City search error for "$query": $e');
+        setState(() {
+          _cityApiSuggestions = [];
+          _loadingCitySuggestions = false;
+        });
+      }
+    });
   }
 
   void _initializeControllers() {
     final provider = Provider.of<PrayerTimesProvider>(context, listen: false);
-    
+
     try {
       final prayerSettings = provider.prayerSettings;
       if (prayerSettings != null && prayerSettings.prayerTimes.isNotEmpty) {
         prayerSettings.prayerTimes.forEach((prayer, time) {
           _adhanControllers[prayer] = TextEditingController(text: time.adhan);
           _iqamahControllers[prayer] = TextEditingController(text: time.iqamah);
-          _delayControllers[prayer] = TextEditingController(text: time.delay.toString());
-          _useDelayControllers[prayer] = prayerSettings.iqamahUseDelay[prayer] ?? true;
+          _delayControllers[prayer] =
+              TextEditingController(text: time.delay.toString());
+          _useDelayControllers[prayer] =
+              prayerSettings.iqamahUseDelay[prayer] ?? true;
         });
       }
     } catch (e) {
@@ -435,7 +565,7 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
 
   void _updateControllers() {
     final provider = Provider.of<PrayerTimesProvider>(context, listen: false);
-    
+
     try {
       final prayerSettings = provider.prayerSettings;
       if (prayerSettings != null && prayerSettings.prayerTimes.isNotEmpty) {
@@ -448,7 +578,8 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
           _iqamahControllers[prayer]!.text = time.iqamah;
           _delayControllers[prayer]!.text = time.delay.toString();
 
-          _useDelayControllers[prayer] = prayerSettings.iqamahUseDelay[prayer] ?? true;
+          _useDelayControllers[prayer] =
+              prayerSettings.iqamahUseDelay[prayer] ?? true;
         });
 
         // Sync location controllers too.
@@ -475,6 +606,7 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
     _countryController.dispose();
     _latitudeController.dispose();
     _longitudeController.dispose();
+    _cityDebounce?.cancel();
     super.dispose();
   }
 
@@ -485,7 +617,8 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
     // Keep UI controllers synced with the latest loaded/saved settings.
     final currentLastUpdated = provider.prayerSettings?.lastUpdated;
     if (currentLastUpdated != null &&
-        (_lastSyncedLastUpdated == null || currentLastUpdated.isAfter(_lastSyncedLastUpdated!))) {
+        (_lastSyncedLastUpdated == null ||
+            currentLastUpdated.isAfter(_lastSyncedLastUpdated!))) {
       _lastSyncedLastUpdated = currentLastUpdated;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
@@ -502,7 +635,8 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
         children: [
           _buildHeader(),
           const SizedBox(height: 24),
-          if (provider.errorMessage != null && provider.errorMessage!.trim().isNotEmpty) ...[
+          if (provider.errorMessage != null &&
+              provider.errorMessage!.trim().isNotEmpty) ...[
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(14),
@@ -613,42 +747,23 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
                         ),
                       ),
                     ),
-                    SizedBox(
-                      width: cardWidth,
-                      child: SettingsSummaryCard(
-                        title: 'Prayer times overwrites',
-                        description:
-                            'In some cases, you can decide to block the athan of\n'
-                            'a prayer at a specific time or set a maximum or\n'
-                            'minimum time.',
-                        leftLabel: '',
-                        leftValue: '',
-                        rightLabel: '',
-                        rightValue: '',
-                        actionLabel: 'Edit',
-                        onAction: () => _openEditDialog(
-                          title: 'Prayer times overwrites',
-                          child: _buildOverridesEditor(provider),
-                        ),
-                      ),
-                    ),
                     // Ramadan Mode toggle card - always visible
                     SizedBox(
                       width: cardWidth,
                       child: _buildRamadanModeCard(provider, special),
                     ),
-                    // Only show Imsak/Iftar/Taraweeh card when Ramadan mode is enabled
+                    // Only show Suhoor End/Iftar card when Ramadan mode is enabled
                     if (special.ramadanModeEnabled)
                       SizedBox(
                         width: cardWidth,
                         child: SettingsSummaryCard(
-                          title: 'Imsak, Iftar and Taraweeh times',
+                          title: 'Suhoor End and Iftar times',
                           description: null,
                           body: Row(
                             children: [
                               Expanded(
                                 child: _SpecialTimeSummary(
-                                  label: 'IMSAK',
+                                  label: 'SUHOOR END',
                                   value: '${special.imsakOffsetMinutes}',
                                   caption: 'Relative to Fajr',
                                 ),
@@ -660,13 +775,6 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
                                   caption: 'Relative to Maghrib',
                                 ),
                               ),
-                              Expanded(
-                                child: _SpecialTimeSummary(
-                                  label: 'TARAWEEH',
-                                  value: '${special.taraweehOffsetMinutes}',
-                                  caption: 'Relative to Isha',
-                                ),
-                              ),
                             ],
                           ),
                           leftLabel: '',
@@ -675,7 +783,7 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
                           rightValue: '',
                           actionLabel: 'Edit',
                           onAction: () => _openEditDialog(
-                            title: 'Imsak, Iftar and Taraweeh times',
+                            title: 'Suhoor End and Iftar times',
                             child: _buildSpecialTimesEditor(provider),
                           ),
                         ),
@@ -691,7 +799,7 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
   }
 
   Widget _buildHeader() {
-    return const PageHeader(
+    return PageHeader(
       icon: Icons.access_time,
       title: 'Prayer Times',
       subtitle: 'Configure adhan calculations, iqamah settings, and location',
@@ -699,7 +807,8 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
   }
 
   String _iqamahModeLabel(PrayerSettings? settings) {
-    final values = (settings?.iqamahUseDelay.values.toList() ?? _useDelayControllers.values.toList());
+    final values = (settings?.iqamahUseDelay.values.toList() ??
+        _useDelayControllers.values.toList());
     if (values.isEmpty) return 'Delays after Athan';
     final allDelay = values.every((v) => v == true);
     return allDelay ? 'Delays after Athan' : 'Fixed times';
@@ -712,8 +821,11 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
       builder: (dialogContext) {
         final maxHeight = MediaQuery.of(dialogContext).size.height * 0.85;
         _PrayerWizardPage page = _PrayerWizardPage.editChooser;
-        bool athanAutoSelected = provider.prayerSettings?.calculationSettings.useAutoCalculation ?? true;
-        bool iqamahDelaysSelected = _iqamahModeLabel(provider.prayerSettings) == 'Delays after Athan';
+        bool athanAutoSelected =
+            provider.prayerSettings?.calculationSettings.useAutoCalculation ??
+                true;
+        bool iqamahDelaysSelected =
+            _iqamahModeLabel(provider.prayerSettings) == 'Delays after Athan';
 
         return StatefulBuilder(
           builder: (context, setState) {
@@ -723,8 +835,10 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
             switch (page) {
               case _PrayerWizardPage.editChooser:
                 content = _buildEditChooser(
-                  onAthan: () => setState(() => page = _PrayerWizardPage.athanChoice),
-                  onIqamah: () => setState(() => page = _PrayerWizardPage.iqamahChoice),
+                  onAthan: () =>
+                      setState(() => page = _PrayerWizardPage.athanChoice),
+                  onIqamah: () =>
+                      setState(() => page = _PrayerWizardPage.iqamahChoice),
                 );
                 break;
               case _PrayerWizardPage.athanChoice:
@@ -770,7 +884,8 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
             return Dialog(
               insetPadding: const EdgeInsets.all(24),
               child: ConstrainedBox(
-                constraints: BoxConstraints(maxWidth: 1040, maxHeight: maxHeight),
+                constraints:
+                    BoxConstraints(maxWidth: 1040, maxHeight: maxHeight),
                 child: Padding(
                   padding: const EdgeInsets.all(20),
                   child: Column(
@@ -1046,7 +1161,8 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
               value: selectedHighLat,
               items: highLatOptions,
               onChanged: (value) => setState(() => selectedHighLat = value),
-              helperText: 'Used to set a minimum time for Fajr and a max time for Isha',
+              helperText:
+                  'Used to set a minimum time for Fajr and a max time for Isha',
             ),
             const SizedBox(height: 18),
             Container(
@@ -1062,50 +1178,59 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
             SizedBox(
               height: 48,
               child: ElevatedButton(
-                onPressed: provider.isCalculating ? null : () async {
-                  // Save settings first
-                  final newSettings = current.copyWith(
-                    method: selectedMethod,
-                    asrMethod: selectedAsr,
-                    highLatitudeRule: selectedHighLat,
-                    useAutoCalculation: true,
-                  );
-                  await provider.updateCalculationSettings(newSettings);
-                  
-                  // Now auto-calculate prayer times
-                  final location = provider.prayerSettings?.location;
-                  if (location != null && 
-                      ((location.city.isNotEmpty && location.country.isNotEmpty) ||
-                       (location.latitude != 0.0 && location.longitude != 0.0))) {
-                    await provider.calculatePrayerTimes();
-                  }
-                  
-                  if (!mounted) return;
-                  if (provider.errorMessage == null) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: const Text('Prayer times calculated and saved!'),
-                        backgroundColor: AdminTheme.accentEmerald,
-                        behavior: SnackBarBehavior.floating,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                      ),
-                    );
-                    Navigator.of(context).pop();
-                  }
-                },
+                onPressed: provider.isCalculating
+                    ? null
+                    : () async {
+                        // Save settings first
+                        final newSettings = current.copyWith(
+                          method: selectedMethod,
+                          asrMethod: selectedAsr,
+                          highLatitudeRule: selectedHighLat,
+                          useAutoCalculation: true,
+                        );
+                        await provider.updateCalculationSettings(newSettings);
+
+                        // Now auto-calculate prayer times
+                        final location = provider.prayerSettings?.location;
+                        if (location != null &&
+                            ((location.city.isNotEmpty &&
+                                    location.country.isNotEmpty) ||
+                                (location.latitude != 0.0 &&
+                                    location.longitude != 0.0))) {
+                          await provider.calculatePrayerTimes();
+                        }
+
+                        if (!mounted) return;
+                        if (provider.errorMessage == null) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: const Text(
+                                  'Prayer times calculated and saved!'),
+                              backgroundColor: AdminTheme.accentEmerald,
+                              behavior: SnackBarBehavior.floating,
+                              shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(8)),
+                            ),
+                          );
+                          Navigator.of(context).pop();
+                        }
+                      },
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AdminTheme.accentEmerald,
                   foregroundColor: Colors.white,
                   elevation: 0,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12)),
                 ),
-                child: provider.isCalculating 
+                child: provider.isCalculating
                     ? const SizedBox(
                         width: 24,
                         height: 24,
-                        child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+                        child: CircularProgressIndicator(
+                            color: Colors.white, strokeWidth: 2),
                       )
-                    : const Text('Calculate & Save Prayer Times', style: TextStyle(fontWeight: FontWeight.w700)),
+                    : const Text('Calculate & Save Prayer Times',
+                        style: TextStyle(fontWeight: FontWeight.w700)),
               ),
             ),
           ],
@@ -1145,7 +1270,8 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
         ...settings.prayerTimes.entries.map((entry) {
           final prayer = entry.key;
           final useDelay = settings.iqamahUseDelay[prayer] ?? true;
-          final delayController = _delayControllers[prayer] ?? TextEditingController(text: entry.value.delay.toString());
+          final delayController = _delayControllers[prayer] ??
+              TextEditingController(text: entry.value.delay.toString());
           _delayControllers[prayer] = delayController;
 
           return Container(
@@ -1206,48 +1332,55 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
                             fillColor: Colors.grey.shade50,
                             border: OutlineInputBorder(
                               borderRadius: BorderRadius.circular(12),
-                              borderSide: BorderSide(color: Colors.grey.shade200),
+                              borderSide:
+                                  BorderSide(color: Colors.grey.shade200),
                             ),
                             enabledBorder: OutlineInputBorder(
                               borderRadius: BorderRadius.circular(12),
-                              borderSide: BorderSide(color: Colors.grey.shade200),
+                              borderSide:
+                                  BorderSide(color: Colors.grey.shade200),
                             ),
                           ),
                           onChanged: (value) async {
-                            final current = provider.prayerSettings?.prayerTimes[prayer];
+                            final current =
+                                provider.prayerSettings?.prayerTimes[prayer];
                             if (current == null) return;
-                            final minutes = int.tryParse(value) ?? current.delay;
-                            await provider.updatePrayerTime(prayer, current.copyWith(delay: minutes));
+                            final minutes =
+                                int.tryParse(value) ?? current.delay;
+                            await provider.updatePrayerTime(
+                                prayer, current.copyWith(delay: minutes));
                           },
                         ),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-                          decoration: BoxDecoration(
-                            color: Colors.grey.shade50,
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: Colors.grey.shade200),
-                          ),
-                          child: Builder(
-                            builder: (context) {
-                              final current = provider.prayerSettings?.prayerTimes[prayer];
-                              final computed = current == null
-                                  ? '--:--'
-                                  : PrayerApiService.calculateIqamah(current.adhan, current.delay);
-                              return Text(
-                                computed,
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  color: Colors.grey.shade700,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              );
-                            },
-                          ),
-                        )
-                      ),
+                          child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 14),
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade50,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.grey.shade200),
+                        ),
+                        child: Builder(
+                          builder: (context) {
+                            final current =
+                                provider.prayerSettings?.prayerTimes[prayer];
+                            final computed = current == null
+                                ? '--:--'
+                                : PrayerApiService.calculateIqamah(
+                                    current.adhan, current.delay);
+                            return Text(
+                              computed,
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                color: Colors.grey.shade700,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            );
+                          },
+                        ),
+                      )),
                     ],
                   )
                 else
@@ -1267,9 +1400,11 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
                       ),
                     ),
                     onChanged: (value) async {
-                      final current = provider.prayerSettings?.prayerTimes[prayer];
+                      final current =
+                          provider.prayerSettings?.prayerTimes[prayer];
                       if (current == null) return;
-                      await provider.updatePrayerTime(prayer, current.copyWith(iqamah: value));
+                      await provider.updatePrayerTime(
+                          prayer, current.copyWith(iqamah: value));
                     },
                   ),
               ],
@@ -1281,16 +1416,24 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
   }
 
   Widget _buildJumuahEditor(PrayerTimesProvider provider) {
-    final times = provider.prayerSettings?.jumuahTimes ?? const ['13:30', '13:30'];
-    final first = TextEditingController(text: times.isNotEmpty ? times.first : '13:30');
-    final second = TextEditingController(text: times.length > 1 ? times[1] : (times.isNotEmpty ? times.first : '13:30'));
+    final times =
+        provider.prayerSettings?.jumuahTimes ?? const ['13:30', '13:30'];
+    final first =
+        TextEditingController(text: times.isNotEmpty ? times.first : '13:30');
+    final second = TextEditingController(
+        text: times.length > 1
+            ? times[1]
+            : (times.isNotEmpty ? times.first : '13:30'));
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const Text(
           'Set your Jumuah prayer times:',
-          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: AdminTheme.textPrimary),
+          style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w700,
+              color: AdminTheme.textPrimary),
         ),
         const SizedBox(height: 14),
         Row(
@@ -1323,14 +1466,16 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
           height: 46,
           child: ElevatedButton(
             onPressed: () async {
-              await provider.updateJumuahTimes([first.text.trim(), second.text.trim()]);
+              await provider
+                  .updateJumuahTimes([first.text.trim(), second.text.trim()]);
               if (!mounted) return;
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
                   content: const Text('Jumuah times saved'),
                   backgroundColor: AdminTheme.accentEmerald,
                   behavior: SnackBarBehavior.floating,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8)),
                 ),
               );
             },
@@ -1338,16 +1483,19 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
               backgroundColor: AdminTheme.textPrimary,
               foregroundColor: Colors.white,
               elevation: 0,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
             ),
-            child: const Text('Save', style: TextStyle(fontWeight: FontWeight.w700)),
+            child: const Text('Save',
+                style: TextStyle(fontWeight: FontWeight.w700)),
           ),
         ),
       ],
     );
   }
 
-  Widget _buildRamadanModeCard(PrayerTimesProvider provider, SpecialTimes special) {
+  Widget _buildRamadanModeCard(
+      PrayerTimesProvider provider, SpecialTimes special) {
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -1377,7 +1525,8 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
               ),
               borderRadius: BorderRadius.circular(12),
             ),
-            child: const Icon(Icons.nightlight_round, color: Colors.white, size: 26),
+            child: const Icon(Icons.nightlight_round,
+                color: Colors.white, size: 26),
           ),
           const SizedBox(width: 16),
           Expanded(
@@ -1409,7 +1558,9 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
             value: special.ramadanModeEnabled,
             activeColor: const Color(0xFF1E3A5F),
             onChanged: (value) async {
-              final updated = special.copyWith(ramadanModeEnabled: value);
+              final updated = value
+                  ? special.copyWith(ramadanModeEnabled: value, suhoorEndTime: null, iftarTime: null)
+                  : special.copyWith(ramadanModeEnabled: value);
               await provider.updateSpecialTimes(updated);
             },
           ),
@@ -1420,287 +1571,442 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
 
   Widget _buildSpecialTimesEditor(PrayerTimesProvider provider) {
     final special = provider.prayerSettings?.specialTimes ?? const SpecialTimes();
-    final imsak = TextEditingController(text: special.imsakOffsetMinutes.toString());
-    final iftar = TextEditingController(text: special.iftarOffsetMinutes.toString());
-    final tara = TextEditingController(text: special.taraweehOffsetMinutes.toString());
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        // Ramadan Mode Section
-        _buildRamadanSection(provider, special),
-        
-        const SizedBox(height: 24),
-        const Divider(),
-        const SizedBox(height: 24),
-        
-        const Text(
-          'Offsets in minutes (relative times):',
-          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: AdminTheme.textPrimary),
-        ),
-        const SizedBox(height: 14),
-        Row(
-          children: [
-            Expanded(
-              child: TextField(
-                controller: imsak,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(
-                  labelText: 'Imsak (relative to Fajr)',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-            ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: TextField(
-                controller: iftar,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(
-                  labelText: 'Iftar (relative to Maghrib)',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-            ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: TextField(
-                controller: tara,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(
-                  labelText: 'Taraweeh (relative to Isha)',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 16),
-        SizedBox(
-          height: 46,
-          child: ElevatedButton(
-            onPressed: () async {
-              final updated = special.copyWith(
-                imsakOffsetMinutes: int.tryParse(imsak.text.trim()) ?? special.imsakOffsetMinutes,
-                iftarOffsetMinutes: int.tryParse(iftar.text.trim()) ?? special.iftarOffsetMinutes,
-                taraweehOffsetMinutes: int.tryParse(tara.text.trim()) ?? special.taraweehOffsetMinutes,
-              );
-              await provider.updateSpecialTimes(updated);
-              if (!mounted) return;
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: const Text('Special times saved'),
-                  backgroundColor: AdminTheme.accentEmerald,
-                  behavior: SnackBarBehavior.floating,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                ),
-              );
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AdminTheme.textPrimary,
-              foregroundColor: Colors.white,
-              elevation: 0,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            ),
-            child: const Text('Save', style: TextStyle(fontWeight: FontWeight.w700)),
-          ),
-        ),
-      ],
-    );
+    return _buildRamadanSection(provider, special);
   }
 
-  Widget _buildRamadanSection(PrayerTimesProvider provider, SpecialTimes special) {
-    final suhoorController = TextEditingController(text: special.suhoorEndTime ?? '');
-    final iftarController = TextEditingController(text: special.iftarTime ?? '');
-
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            const Color(0xFF1E3A5F).withOpacity(0.1),
-            const Color(0xFF4A90A4).withOpacity(0.05),
-          ],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFF1E3A5F).withOpacity(0.2)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+  Widget _buildRamadanSection(
+      PrayerTimesProvider provider, SpecialTimes special) {
+    return Consumer<PrayerTimesProvider>(
+      builder: (context, provider, _) {
+        final special = provider.prayerSettings?.specialTimes ?? const SpecialTimes();
+        final suhoorController = TextEditingController(text: special.suhoorEndTime ?? '');
+        final iftarController = TextEditingController(text: special.iftarTime ?? '');
+        return Container(
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [
+                const Color(0xFF1E3A5F).withOpacity(0.1),
+                const Color(0xFF4A90A4).withOpacity(0.05),
+              ],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: const Color(0xFF1E3A5F).withOpacity(0.2)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Container(
-                width: 44,
-                height: 44,
-                decoration: BoxDecoration(
-                  gradient: const LinearGradient(
-                    colors: [Color(0xFF1E3A5F), Color(0xFF4A90A4)],
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
+              Row(
+                children: [
+                  Container(
+                    width: 44,
+                    height: 44,
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                        colors: [Color(0xFF1E3A5F), Color(0xFF4A90A4)],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: const Icon(Icons.nightlight_round, color: Colors.white, size: 24),
                   ),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: const Icon(Icons.nightlight_round, color: Colors.white, size: 24),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Ramadan Mode',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w700,
+                            color: AdminTheme.textPrimary,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Display Suhoor and Iftar times on TV',
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: Colors.grey[600],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Switch(
+                    value: special.ramadanModeEnabled,
+                    activeColor: const Color(0xFF1E3A5F),
+                    onChanged: (value) async {
+                      final updated = value
+                          ? special.copyWith(ramadanModeEnabled: value, suhoorEndTime: null, iftarTime: null)
+                          : special.copyWith(ramadanModeEnabled: value);
+                      await provider.updateSpecialTimes(updated);
+                    },
+                  ),
+                ],
               ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Ramadan Mode',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w700,
-                        color: AdminTheme.textPrimary,
+              if (special.ramadanModeEnabled) ...[
+                const SizedBox(height: 20),
+                // Toggle between Manual and Calculated times
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.grey.shade300),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Time Source',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.grey[700],
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: GestureDetector(
+                              onTap: () async {
+                                final updated = special.copyWith(useManualRamadanTimes: false);
+                                await provider.updateSpecialTimes(updated);
+                              },
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                                decoration: BoxDecoration(
+                                  color: !special.useManualRamadanTimes 
+                                      ? const Color(0xFF1E3A5F) 
+                                      : Colors.grey.shade100,
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(
+                                      Icons.calculate,
+                                      size: 18,
+                                      color: !special.useManualRamadanTimes 
+                                          ? Colors.white 
+                                          : Colors.grey[600],
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      'Calculated',
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.w600,
+                                        color: !special.useManualRamadanTimes 
+                                            ? Colors.white 
+                                            : Colors.grey[600],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: GestureDetector(
+                              onTap: () async {
+                                final updated = special.copyWith(useManualRamadanTimes: true);
+                                await provider.updateSpecialTimes(updated);
+                              },
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                                decoration: BoxDecoration(
+                                  color: special.useManualRamadanTimes 
+                                      ? const Color(0xFF1E3A5F) 
+                                      : Colors.grey.shade100,
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(
+                                      Icons.edit,
+                                      size: 18,
+                                      color: special.useManualRamadanTimes 
+                                          ? Colors.white 
+                                          : Colors.grey[600],
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      'Manual',
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.w600,
+                                        color: special.useManualRamadanTimes 
+                                            ? Colors.white 
+                                            : Colors.grey[600],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        special.useManualRamadanTimes 
+                            ? 'Enter Suhoor and Iftar times manually below'
+                            : 'Suhoor = Fajr + Imsak offset, Iftar = Maghrib + Iftar offset',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey[500],
+                          fontStyle: FontStyle.italic,
+                        ),
+                      ),
+                      if (!special.useManualRamadanTimes) ...[
+                        const SizedBox(height: 16),
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.grey.shade50,
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: Colors.grey.shade200),
+                          ),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Text(
+                                      'Suhoor Ends',
+                                      style: TextStyle(
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w600,
+                                        color: AdminTheme.textPrimary,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      (_calculateSuhoorEndTime(provider, special) ?? special.suhoorEndTime) ?? 'Choose suhur and iftar timings',
+                                      style: TextStyle(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.blueGrey[900],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Text(
+                                      'Iftar',
+                                      style: TextStyle(
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w600,
+                                        color: AdminTheme.textPrimary,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      (_calculateIftarTime(provider, special) ?? special.iftarTime) ?? 'Choose suhur and iftar timings',
+                                      style: TextStyle(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.deepOrange[900],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        SizedBox(
+                          width: double.infinity,
+                          height: 44,
+                          child: ElevatedButton.icon(
+                            onPressed: () async {
+                              final computedSuhoor = _calculateSuhoorEndTime(provider, special);
+                              final computedIftar = _calculateIftarTime(provider, special);
+
+                              if ((computedSuhoor == null || computedSuhoor.isEmpty) &&
+                                  (computedIftar == null || computedIftar.isEmpty)) {
+                                if (!context.mounted) return;
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: const Text('Could not compute Ramadan times (missing prayer times).'),
+                                    backgroundColor: Colors.redAccent,
+                                    behavior: SnackBarBehavior.floating,
+                                  ),
+                                );
+                                return;
+                              }
+
+                              final updated = special.copyWith(
+                                suhoorEndTime: computedSuhoor ?? special.suhoorEndTime,
+                                iftarTime: computedIftar ?? special.iftarTime,
+                                useManualRamadanTimes: false,
+                              );
+
+                              await provider.updateSpecialTimes(updated);
+                              if (!context.mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: const Text('Calculated Ramadan times saved — TV will update shortly.'),
+                                  backgroundColor: AdminTheme.accentEmerald,
+                                  behavior: SnackBarBehavior.floating,
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                ),
+                              );
+                            },
+                            icon: const Icon(Icons.save, size: 18),
+                            label: const Text('Save Calculated Ramadan Times', style: TextStyle(fontWeight: FontWeight.w700)),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF1E3A5F),
+                              foregroundColor: Colors.white,
+                              elevation: 0,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                            ),
+                          ),
+                        ),
+                      ],
+
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                // Manual time inputs (only shown when manual mode is selected)
+                if (special.useManualRamadanTimes) ...[
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(Icons.wb_twilight, size: 18, color: Colors.orange[700]),
+                                const SizedBox(width: 8),
+                                const Text(
+                                  'Suhoor Ends',
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w600,
+                                    color: AdminTheme.textPrimary,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            TextField(
+                              controller: suhoorController,
+                              decoration: InputDecoration(
+                                hintText: 'e.g., 05:30',
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                filled: true,
+                                fillColor: Colors.white,
+                                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(Icons.dinner_dining, size: 18, color: Colors.deepOrange[700]),
+                                const SizedBox(width: 8),
+                                const Text(
+                                  'Iftar Time',
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w600,
+                                    color: AdminTheme.textPrimary,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            TextField(
+                              controller: iftarController,
+                              decoration: InputDecoration(
+                                hintText: 'e.g., 18:45',
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                filled: true,
+                                fillColor: Colors.white,
+                                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 46,
+                    child: ElevatedButton.icon(
+                      onPressed: () async {
+                        final updated = special.copyWith(
+                          suhoorEndTime: suhoorController.text.trim().isNotEmpty 
+                              ? suhoorController.text.trim() 
+                              : null,
+                          iftarTime: iftarController.text.trim().isNotEmpty 
+                              ? iftarController.text.trim() 
+                              : null,
+                        );
+                        await provider.updateSpecialTimes(updated);
+                        if (!context.mounted) return;
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: const Text('Ramadan times saved'),
+                            backgroundColor: AdminTheme.accentEmerald,
+                            behavior: SnackBarBehavior.floating,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          ),
+                        );
+                      },
+                      icon: const Icon(Icons.save, size: 18),
+                      label: const Text('Save Ramadan Times', style: TextStyle(fontWeight: FontWeight.w600)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF1E3A5F),
+                        foregroundColor: Colors.white,
+                        elevation: 0,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                       ),
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      'Display Suhoor and Iftar times on TV',
-                      style: TextStyle(
-                        fontSize: 13,
-                        color: Colors.grey[600],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              Switch(
-                value: special.ramadanModeEnabled,
-                activeColor: const Color(0xFF1E3A5F),
-                onChanged: (value) async {
-                  final updated = special.copyWith(ramadanModeEnabled: value);
-                  await provider.updateSpecialTimes(updated);
-                },
-              ),
+                  ),
+                ],
+              ],
             ],
           ),
-          
-          if (special.ramadanModeEnabled) ...[
-            const SizedBox(height: 20),
-            Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Icon(Icons.wb_twilight, size: 18, color: Colors.orange[700]),
-                          const SizedBox(width: 8),
-                          const Text(
-                            'Suhoor Ends',
-                            style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w600,
-                              color: AdminTheme.textPrimary,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      TextField(
-                        controller: suhoorController,
-                        decoration: InputDecoration(
-                          hintText: 'e.g., 05:30',
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          filled: true,
-                          fillColor: Colors.white,
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Icon(Icons.dinner_dining, size: 18, color: Colors.deepOrange[700]),
-                          const SizedBox(width: 8),
-                          const Text(
-                            'Iftar Time',
-                            style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w600,
-                              color: AdminTheme.textPrimary,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      TextField(
-                        controller: iftarController,
-                        decoration: InputDecoration(
-                          hintText: 'e.g., 18:45',
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          filled: true,
-                          fillColor: Colors.white,
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            SizedBox(
-              width: double.infinity,
-              height: 46,
-              child: ElevatedButton.icon(
-                onPressed: () async {
-                  final updated = special.copyWith(
-                    suhoorEndTime: suhoorController.text.trim().isNotEmpty 
-                        ? suhoorController.text.trim() 
-                        : null,
-                    iftarTime: iftarController.text.trim().isNotEmpty 
-                        ? iftarController.text.trim() 
-                        : null,
-                  );
-                  await provider.updateSpecialTimes(updated);
-                  if (!mounted) return;
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: const Text('Ramadan times saved'),
-                      backgroundColor: AdminTheme.accentEmerald,
-                      behavior: SnackBarBehavior.floating,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                    ),
-                  );
-                },
-                icon: const Icon(Icons.save, size: 18),
-                label: const Text('Save Ramadan Times', style: TextStyle(fontWeight: FontWeight.w600)),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF1E3A5F),
-                  foregroundColor: Colors.white,
-                  elevation: 0,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                ),
-              ),
-            ),
-          ],
-        ],
-      ),
+        );
+      },
     );
+    // Removed stray duplicated code
   }
-
   Widget _buildOverridesEditor(PrayerTimesProvider provider) {
     final settings = provider.prayerSettings;
     if (settings == null) return const SizedBox.shrink();
 
-    final overrides = Map<String, PrayerTimeOverride>.from(settings.prayerTimeOverrides);
+    final overrides =
+        Map<String, PrayerTimeOverride>.from(settings.prayerTimeOverrides);
     final minControllers = <String, TextEditingController>{};
     final maxControllers = <String, TextEditingController>{};
 
@@ -1715,7 +2021,10 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
       children: [
         const Text(
           'Optional min/max times per prayer (HH:MM):',
-          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: AdminTheme.textPrimary),
+          style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w700,
+              color: AdminTheme.textPrimary),
         ),
         const SizedBox(height: 14),
         ...settings.prayerTimes.keys.map((prayer) {
@@ -1727,7 +2036,9 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
                   width: 110,
                   child: Text(
                     _capitalizeFirst(prayer),
-                    style: const TextStyle(fontWeight: FontWeight.w700, color: AdminTheme.textPrimary),
+                    style: const TextStyle(
+                        fontWeight: FontWeight.w700,
+                        color: AdminTheme.textPrimary),
                   ),
                 ),
                 Expanded(
@@ -1779,7 +2090,8 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
                   content: const Text('Overrides saved'),
                   backgroundColor: AdminTheme.accentEmerald,
                   behavior: SnackBarBehavior.floating,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8)),
                 ),
               );
             },
@@ -1787,9 +2099,11 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
               backgroundColor: AdminTheme.textPrimary,
               foregroundColor: Colors.white,
               elevation: 0,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
             ),
-            child: const Text('Save', style: TextStyle(fontWeight: FontWeight.w700)),
+            child: const Text('Save',
+                style: TextStyle(fontWeight: FontWeight.w700)),
           ),
         ),
       ],
@@ -1888,7 +2202,10 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
                   decoration: BoxDecoration(
                     gradient: _selectedTab == 0
                         ? const LinearGradient(
-                            colors: [AdminTheme.primaryBlueLight, AdminTheme.primaryBlue],
+                            colors: [
+                              AdminTheme.primaryBlueLight,
+                              AdminTheme.primaryBlue
+                            ],
                           )
                         : null,
                     borderRadius: const BorderRadius.only(
@@ -1902,7 +2219,9 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
                       style: TextStyle(
                         fontSize: 15,
                         fontWeight: FontWeight.w600,
-                        color: _selectedTab == 0 ? Colors.white : Colors.grey.shade700,
+                        color: _selectedTab == 0
+                            ? Colors.white
+                            : Colors.grey.shade700,
                       ),
                     ),
                   ),
@@ -1929,7 +2248,10 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
                   decoration: BoxDecoration(
                     gradient: _selectedTab == 1
                         ? const LinearGradient(
-                            colors: [AdminTheme.primaryBlueLight, AdminTheme.primaryBlue],
+                            colors: [
+                              AdminTheme.primaryBlueLight,
+                              AdminTheme.primaryBlue
+                            ],
                           )
                         : null,
                     borderRadius: const BorderRadius.only(
@@ -1943,7 +2265,9 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
                       style: TextStyle(
                         fontSize: 15,
                         fontWeight: FontWeight.w600,
-                        color: _selectedTab == 1 ? Colors.white : Colors.grey.shade700,
+                        color: _selectedTab == 1
+                            ? Colors.white
+                            : Colors.grey.shade700,
                       ),
                     ),
                   ),
@@ -1951,6 +2275,7 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
               ),
             ),
           ),
+                        // (moved) Save button appears directly in Calculated block below
         ],
       ),
     );
@@ -1974,253 +2299,271 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-          Padding(
-            padding: const EdgeInsets.all(32),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Container(
-                      width: 48,
-                      height: 48,
-                      decoration: BoxDecoration(
-                        color: AdminTheme.primaryBlueLight.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(14),
+            Padding(
+              padding: const EdgeInsets.all(32),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        width: 48,
+                        height: 48,
+                        decoration: BoxDecoration(
+                          color: AdminTheme.primaryBlueLight.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: const Icon(
+                          Icons.mic_none,
+                          color: AdminTheme.primaryBlueLight,
+                          size: 24,
+                        ),
                       ),
-                      child: const Icon(
-                        Icons.mic_none,
-                        color: AdminTheme.primaryBlueLight,
-                        size: 24,
+                      const SizedBox(width: 16),
+                      const Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Adhan Times Configuration',
+                              style: TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.w700,
+                                color: AdminTheme.textPrimary,
+                              ),
+                            ),
+                            SizedBox(height: 4),
+                            Text(
+                              'Set exact adhan times for each prayer',
+                              style: TextStyle(
+                                color: AdminTheme.textMuted,
+                                fontSize: 14,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
+                    ],
+                  ),
+                  const SizedBox(height: 32),
+
+                  // Table Header
+                  Container(
+                    decoration: BoxDecoration(
+                      color: AdminTheme.primaryBlueLight,
+                      borderRadius: BorderRadius.circular(12),
                     ),
-                    const SizedBox(width: 16),
-                    const Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Row(
                         children: [
-                          Text(
-                            'Adhan Times Configuration',
-                            style: TextStyle(
-                              fontSize: 20,
-                              fontWeight: FontWeight.w700,
-                              color: AdminTheme.textPrimary,
+                          Expanded(
+                            flex: 2,
+                            child: Text(
+                              'Prayer',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.w600,
+                                fontSize: 14,
+                              ),
                             ),
                           ),
-                          SizedBox(height: 4),
-                          Text(
-                            'Set exact adhan times for each prayer',
-                            style: TextStyle(
-                              color: AdminTheme.textMuted,
-                              fontSize: 14,
+                          Expanded(
+                            flex: 3,
+                            child: Text(
+                              'Adhan Time',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.w600,
+                                fontSize: 14,
+                              ),
                             ),
                           ),
                         ],
                       ),
                     ),
-                  ],
-                ),
-                const SizedBox(height: 32),
-                
-                // Table Header
-                Container(
-                  decoration: BoxDecoration(
-                    color: AdminTheme.primaryBlueLight,
-                    borderRadius: BorderRadius.circular(12),
                   ),
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          flex: 2,
-                          child: Text(
-                            'Prayer',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.w600,
-                              fontSize: 14,
-                            ),
-                          ),
-                        ),
-                        Expanded(
-                          flex: 3,
-                          child: Text(
-                            'Adhan Time',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.w600,
-                              fontSize: 14,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 1),
-                
-                // Prayer Rows
-                if (provider.prayerSettings != null)
-                  ...provider.prayerSettings!.prayerTimes.entries.map((entry) {
-                    final prayer = entry.key;
-                    return Material(
-                      color: Colors.transparent,
-                      child: InkWell(
-                        onTap: () {},
-                        borderRadius: BorderRadius.circular(8),
-                        child: Container(
-                          decoration: BoxDecoration(
-                            border: Border(
-                              bottom: BorderSide(color: Colors.grey.shade100),
-                            ),
-                          ),
-                          child: Padding(
-                            padding: const EdgeInsets.all(16),
-                            child: Row(
-                              children: [
-                                Expanded(
-                                  flex: 2,
-                                  child: Row(
-                                    children: [
-                                      Container(
-                                        width: 36,
-                                        height: 36,
-                                        decoration: BoxDecoration(
-                                          color: _getPrayerColor(prayer).withOpacity(0.1),
-                                          borderRadius: BorderRadius.circular(10),
-                                        ),
-                                        child: Icon(
-                                          _getPrayerIcon(prayer),
-                                          color: _getPrayerColor(prayer),
-                                          size: 18,
-                                        ),
-                                      ),
-                                      const SizedBox(width: 12),
-                                      Text(
-                                        _capitalizeFirst(prayer),
-                                        style: const TextStyle(
-                                          fontSize: 15,
-                                          fontWeight: FontWeight.w600,
-                                          color: AdminTheme.textPrimary,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                Expanded(
-                                  flex: 3,
-                                  child: TextField(
-                                    controller: _adhanControllers[prayer],
-                                    style: const TextStyle(
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.w500,
-                                      color: AdminTheme.textPrimary,
-                                    ),
-                                    decoration: InputDecoration(
-                                      hintText: 'HH:MM',
-                                      hintStyle: TextStyle(color: Colors.grey.shade400),
-                                      border: OutlineInputBorder(
-                                        borderRadius: BorderRadius.circular(10),
-                                        borderSide: BorderSide(color: Colors.grey.shade300),
-                                      ),
-                                      enabledBorder: OutlineInputBorder(
-                                        borderRadius: BorderRadius.circular(10),
-                                        borderSide: BorderSide(color: Colors.grey.shade300),
-                                      ),
-                                      focusedBorder: OutlineInputBorder(
-                                        borderRadius: BorderRadius.circular(10),
-                                        borderSide: const BorderSide(color: AdminTheme.primaryBlueLight, width: 2),
-                                      ),
-                                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                                      suffixIcon: Icon(
-                                        Icons.schedule,
-                                        color: Colors.grey.shade400,
-                                        size: 20,
-                                      ),
-                                    ),
-                                    // Do not save on each keystroke; save on button press.
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                    );
-                  }).toList(),
-              ],
-            ),
-          ),
-          
-          // Save Button
-          Container(
-            padding: const EdgeInsets.all(24),
-            decoration: BoxDecoration(
-              color: Colors.grey.shade50,
-              borderRadius: const BorderRadius.only(
-                bottomLeft: Radius.circular(24),
-                bottomRight: Radius.circular(24),
-              ),
-              border: Border(
-                top: BorderSide(color: Colors.grey.shade200),
-              ),
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                ElevatedButton(
-                  onPressed: () async {
-                    final settings = provider.prayerSettings;
-                    if (settings == null) return;
+                  const SizedBox(height: 1),
 
-                    final updatedPrayerTimes = Map<String, PrayerTime>.from(settings.prayerTimes);
-                    for (final prayer in settings.prayerTimes.keys) {
-                      final ctrl = _adhanControllers[prayer];
-                      if (ctrl == null) continue;
-                      final existing = updatedPrayerTimes[prayer];
-                      if (existing == null) continue;
-                      updatedPrayerTimes[prayer] = existing.copyWith(adhan: ctrl.text.trim());
-                    }
-
-                    await provider.savePrayerTimesBulk(
-                      prayerTimes: updatedPrayerTimes,
-                      iqamahUseDelay: Map<String, bool>.from(settings.iqamahUseDelay),
-                    );
-
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: const Text('Adhan times saved successfully'),
-                        backgroundColor: AdminTheme.accentEmerald,
-                        shape: RoundedRectangleBorder(
+                  // Prayer Rows
+                  if (provider.prayerSettings != null)
+                    ...provider.prayerSettings!.prayerTimes.entries
+                        .map((entry) {
+                      final prayer = entry.key;
+                      return Material(
+                        color: Colors.transparent,
+                        child: InkWell(
+                          onTap: () {},
                           borderRadius: BorderRadius.circular(8),
+                          child: Container(
+                            decoration: BoxDecoration(
+                              border: Border(
+                                bottom: BorderSide(color: Colors.grey.shade100),
+                              ),
+                            ),
+                            child: Padding(
+                              padding: const EdgeInsets.all(16),
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    flex: 2,
+                                    child: Row(
+                                      children: [
+                                        Container(
+                                          width: 36,
+                                          height: 36,
+                                          decoration: BoxDecoration(
+                                            color: _getPrayerColor(prayer)
+                                                .withOpacity(0.1),
+                                            borderRadius:
+                                                BorderRadius.circular(10),
+                                          ),
+                                          child: Icon(
+                                            _getPrayerIcon(prayer),
+                                            color: _getPrayerColor(prayer),
+                                            size: 18,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 12),
+                                        Text(
+                                          _capitalizeFirst(prayer),
+                                          style: const TextStyle(
+                                            fontSize: 15,
+                                            fontWeight: FontWeight.w600,
+                                            color: AdminTheme.textPrimary,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  Expanded(
+                                    flex: 3,
+                                    child: TextField(
+                                      controller: _adhanControllers[prayer],
+                                      style: const TextStyle(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.w500,
+                                        color: AdminTheme.textPrimary,
+                                      ),
+                                      decoration: InputDecoration(
+                                        hintText: 'HH:MM',
+                                        hintStyle: TextStyle(
+                                            color: Colors.grey.shade400),
+                                        border: OutlineInputBorder(
+                                          borderRadius:
+                                              BorderRadius.circular(10),
+                                          borderSide: BorderSide(
+                                              color: Colors.grey.shade300),
+                                        ),
+                                        enabledBorder: OutlineInputBorder(
+                                          borderRadius:
+                                              BorderRadius.circular(10),
+                                          borderSide: BorderSide(
+                                              color: Colors.grey.shade300),
+                                        ),
+                                        focusedBorder: OutlineInputBorder(
+                                          borderRadius:
+                                              BorderRadius.circular(10),
+                                          borderSide: const BorderSide(
+                                              color:
+                                                  AdminTheme.primaryBlueLight,
+                                              width: 2),
+                                        ),
+                                        contentPadding:
+                                            const EdgeInsets.symmetric(
+                                                horizontal: 16, vertical: 14),
+                                        suffixIcon: Icon(
+                                          Icons.schedule,
+                                          color: Colors.grey.shade400,
+                                          size: 20,
+                                        ),
+                                      ),
+                                      // Do not save on each keystroke; save on button press.
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
                         ),
-                        behavior: SnackBarBehavior.floating,
-                      ),
-                    );
-                  },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AdminTheme.primaryBlueLight,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 14),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    elevation: 0,
-                  ),
-                  child: const Text(
-                    'Save Changes',
-                    style: TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-              ],
+                      );
+                    }).toList(),
+                ],
+              ),
             ),
-          ),
-        ],
-      ),
+
+            // Save Button
+            Container(
+              padding: const EdgeInsets.all(24),
+              decoration: BoxDecoration(
+                color: Colors.grey.shade50,
+                borderRadius: const BorderRadius.only(
+                  bottomLeft: Radius.circular(24),
+                  bottomRight: Radius.circular(24),
+                ),
+                border: Border(
+                  top: BorderSide(color: Colors.grey.shade200),
+                ),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  ElevatedButton(
+                    onPressed: () async {
+                      final settings = provider.prayerSettings;
+                      if (settings == null) return;
+
+                      final updatedPrayerTimes =
+                          Map<String, PrayerTime>.from(settings.prayerTimes);
+                      for (final prayer in settings.prayerTimes.keys) {
+                        final ctrl = _adhanControllers[prayer];
+                        if (ctrl == null) continue;
+                        final existing = updatedPrayerTimes[prayer];
+                        if (existing == null) continue;
+                        updatedPrayerTimes[prayer] =
+                            existing.copyWith(adhan: ctrl.text.trim());
+                      }
+
+                      await provider.savePrayerTimesBulk(
+                        prayerTimes: updatedPrayerTimes,
+                        iqamahUseDelay:
+                            Map<String, bool>.from(settings.iqamahUseDelay),
+                      );
+
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: const Text('Adhan times saved successfully'),
+                          backgroundColor: AdminTheme.accentEmerald,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          behavior: SnackBarBehavior.floating,
+                        ),
+                      );
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AdminTheme.primaryBlueLight,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 32, vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      elevation: 0,
+                    ),
+                    child: const Text(
+                      'Save Changes',
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -2243,317 +2586,373 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-          Padding(
-            padding: const EdgeInsets.all(32),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Container(
-                      width: 48,
-                      height: 48,
-                      decoration: BoxDecoration(
-                        color: AdminTheme.primaryBlueLight.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                      child: const Icon(
-                        Icons.group,
-                        color: AdminTheme.primaryBlueLight,
-                        size: 24,
-                      ),
-                    ),
-                    const SizedBox(width: 16),
-                    const Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Iqamah Configuration',
-                            style: TextStyle(
-                              fontSize: 20,
-                              fontWeight: FontWeight.w700,
-                              color: AdminTheme.textPrimary,
-                            ),
-                          ),
-                          SizedBox(height: 4),
-                          Text(
-                            'Set iqamah times or delays after adhan',
-                            style: TextStyle(
-                              color: AdminTheme.textMuted,
-                              fontSize: 14,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 32),
-                
-                if (provider.prayerSettings != null)
-                  Column(
-                    children: provider.prayerSettings!.prayerTimes.entries.map((entry) {
-                      final prayer = entry.key;
-                      final useDelay = _useDelayControllers[prayer] ?? true;
-                      
-                      return Container(
-                        margin: const EdgeInsets.only(bottom: 20),
+            Padding(
+              padding: const EdgeInsets.all(32),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        width: 48,
+                        height: 48,
                         decoration: BoxDecoration(
-                          color: Colors.grey.shade50,
-                          borderRadius: BorderRadius.circular(16),
-                          border: Border.all(color: Colors.grey.shade200),
+                          color: AdminTheme.primaryBlueLight.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(14),
                         ),
-                        child: Padding(
-                          padding: const EdgeInsets.all(20),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                children: [
-                                  Container(
-                                    width: 40,
-                                    height: 40,
-                                    decoration: BoxDecoration(
-                                      color: _getPrayerColor(prayer).withOpacity(0.1),
-                                      shape: BoxShape.circle,
-                                    ),
-                                    child: Icon(
-                                      _getPrayerIcon(prayer),
-                                      color: _getPrayerColor(prayer),
-                                      size: 18,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  Text(
-                                    _capitalizeFirst(prayer),
-                                    style: const TextStyle(
-                                      fontSize: 17,
-                                      fontWeight: FontWeight.w700,
-                                      color: AdminTheme.textPrimary,
-                                    ),
-                                  ),
-                                ],
+                        child: const Icon(
+                          Icons.group,
+                          color: AdminTheme.primaryBlueLight,
+                          size: 24,
+                        ),
+                      ),
+                      const SizedBox(width: 16),
+                      const Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Iqamah Configuration',
+                              style: TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.w700,
+                                color: AdminTheme.textPrimary,
                               ),
-                              const SizedBox(height: 20),
-                              
-                              // Mode Selection
-                              Container(
-                                decoration: BoxDecoration(
-                                  color: Colors.white,
-                                  borderRadius: BorderRadius.circular(12),
-                                  border: Border.all(color: Colors.grey.shade200),
-                                ),
-                                child: Row(
+                            ),
+                            SizedBox(height: 4),
+                            Text(
+                              'Set iqamah times or delays after adhan',
+                              style: TextStyle(
+                                color: AdminTheme.textMuted,
+                                fontSize: 14,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 32),
+                  if (provider.prayerSettings != null)
+                    Column(
+                      children: provider.prayerSettings!.prayerTimes.entries
+                          .map((entry) {
+                        final prayer = entry.key;
+                        final useDelay = _useDelayControllers[prayer] ?? true;
+
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 20),
+                          decoration: BoxDecoration(
+                            color: Colors.grey.shade50,
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: Colors.grey.shade200),
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.all(20),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
                                   children: [
-                                    Expanded(
-                                      child: Material(
-                                        color: Colors.transparent,
-                                        child: InkWell(
-                                          onTap: () => setState(() => _useDelayControllers[prayer] = true),
-                                          borderRadius: const BorderRadius.only(
-                                            topLeft: Radius.circular(12),
-                                            bottomLeft: Radius.circular(12),
-                                          ),
-                                          child: AnimatedContainer(
-                                            duration: const Duration(milliseconds: 300),
-                                            padding: const EdgeInsets.symmetric(vertical: 14),
-                                            decoration: BoxDecoration(
-                                              color: useDelay ? AdminTheme.primaryBlueLight.withOpacity(0.1) : Colors.transparent,
-                                              borderRadius: const BorderRadius.only(
-                                                topLeft: Radius.circular(12),
-                                                bottomLeft: Radius.circular(12),
-                                              ),
-                                              border: Border.all(
-                                                color: useDelay ? AdminTheme.primaryBlueLight.withOpacity(0.3) : Colors.transparent,
-                                              ),
-                                            ),
-                                            child: Center(
-                                              child: Text(
-                                                'Delay after Adhan',
-                                                style: TextStyle(
-                                                  fontSize: 14,
-                                                  fontWeight: FontWeight.w600,
-                                                  color: useDelay ? AdminTheme.primaryBlueLight : Colors.grey.shade600,
-                                                ),
-                                              ),
-                                            ),
-                                          ),
-                                        ),
+                                    Container(
+                                      width: 40,
+                                      height: 40,
+                                      decoration: BoxDecoration(
+                                        color: _getPrayerColor(prayer)
+                                            .withOpacity(0.1),
+                                        shape: BoxShape.circle,
+                                      ),
+                                      child: Icon(
+                                        _getPrayerIcon(prayer),
+                                        color: _getPrayerColor(prayer),
+                                        size: 18,
                                       ),
                                     ),
-                                    Container(
-                                      width: 1,
-                                      color: Colors.grey.shade200,
-                                    ),
-                                    Expanded(
-                                      child: Material(
-                                        color: Colors.transparent,
-                                        child: InkWell(
-                                          onTap: () => setState(() => _useDelayControllers[prayer] = false),
-                                          borderRadius: const BorderRadius.only(
-                                            topRight: Radius.circular(12),
-                                            bottomRight: Radius.circular(12),
-                                          ),
-                                          child: AnimatedContainer(
-                                            duration: const Duration(milliseconds: 300),
-                                            padding: const EdgeInsets.symmetric(vertical: 14),
-                                            decoration: BoxDecoration(
-                                              color: !useDelay ? AdminTheme.primaryBlue.withOpacity(0.1) : Colors.transparent,
-                                              borderRadius: const BorderRadius.only(
-                                                topRight: Radius.circular(12),
-                                                bottomRight: Radius.circular(12),
-                                              ),
-                                              border: Border.all(
-                                                color: !useDelay ? AdminTheme.primaryBlue.withOpacity(0.3) : Colors.transparent,
-                                              ),
-                                            ),
-                                            child: Center(
-                                              child: Text(
-                                                'Fixed Time',
-                                                style: TextStyle(
-                                                  fontSize: 14,
-                                                  fontWeight: FontWeight.w600,
-                                                  color: !useDelay ? AdminTheme.primaryBlue : Colors.grey.shade600,
-                                                ),
-                                              ),
-                                            ),
-                                          ),
-                                        ),
+                                    const SizedBox(width: 12),
+                                    Text(
+                                      _capitalizeFirst(prayer),
+                                      style: const TextStyle(
+                                        fontSize: 17,
+                                        fontWeight: FontWeight.w700,
+                                        color: AdminTheme.textPrimary,
                                       ),
                                     ),
                                   ],
                                 ),
-                              ),
-                              const SizedBox(height: 20),
-                              
-                              // Input Field
-                              TextField(
-                                controller: useDelay ? _delayControllers[prayer] : _iqamahControllers[prayer],
-                                keyboardType: useDelay ? TextInputType.number : TextInputType.text,
-                                style: const TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w500,
-                                  color: AdminTheme.textPrimary,
+                                const SizedBox(height: 20),
+
+                                // Mode Selection
+                                Container(
+                                  decoration: BoxDecoration(
+                                    color: Colors.white,
+                                    borderRadius: BorderRadius.circular(12),
+                                    border:
+                                        Border.all(color: Colors.grey.shade200),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      Expanded(
+                                        child: Material(
+                                          color: Colors.transparent,
+                                          child: InkWell(
+                                            onTap: () => setState(() =>
+                                                _useDelayControllers[prayer] =
+                                                    true),
+                                            borderRadius:
+                                                const BorderRadius.only(
+                                              topLeft: Radius.circular(12),
+                                              bottomLeft: Radius.circular(12),
+                                            ),
+                                            child: AnimatedContainer(
+                                              duration: const Duration(
+                                                  milliseconds: 300),
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                      vertical: 14),
+                                              decoration: BoxDecoration(
+                                                color: useDelay
+                                                    ? AdminTheme
+                                                        .primaryBlueLight
+                                                        .withOpacity(0.1)
+                                                    : Colors.transparent,
+                                                borderRadius:
+                                                    const BorderRadius.only(
+                                                  topLeft: Radius.circular(12),
+                                                  bottomLeft:
+                                                      Radius.circular(12),
+                                                ),
+                                                border: Border.all(
+                                                  color: useDelay
+                                                      ? AdminTheme
+                                                          .primaryBlueLight
+                                                          .withOpacity(0.3)
+                                                      : Colors.transparent,
+                                                ),
+                                              ),
+                                              child: Center(
+                                                child: Text(
+                                                  'Delay after Adhan',
+                                                  style: TextStyle(
+                                                    fontSize: 14,
+                                                    fontWeight: FontWeight.w600,
+                                                    color: useDelay
+                                                        ? AdminTheme
+                                                            .primaryBlueLight
+                                                        : Colors.grey.shade600,
+                                                  ),
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                      Container(
+                                        width: 1,
+                                        color: Colors.grey.shade200,
+                                      ),
+                                      Expanded(
+                                        child: Material(
+                                          color: Colors.transparent,
+                                          child: InkWell(
+                                            onTap: () => setState(() =>
+                                                _useDelayControllers[prayer] =
+                                                    false),
+                                            borderRadius:
+                                                const BorderRadius.only(
+                                              topRight: Radius.circular(12),
+                                              bottomRight: Radius.circular(12),
+                                            ),
+                                            child: AnimatedContainer(
+                                              duration: const Duration(
+                                                  milliseconds: 300),
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                      vertical: 14),
+                                              decoration: BoxDecoration(
+                                                color: !useDelay
+                                                    ? AdminTheme.primaryBlue
+                                                        .withOpacity(0.1)
+                                                    : Colors.transparent,
+                                                borderRadius:
+                                                    const BorderRadius.only(
+                                                  topRight: Radius.circular(12),
+                                                  bottomRight:
+                                                      Radius.circular(12),
+                                                ),
+                                                border: Border.all(
+                                                  color: !useDelay
+                                                      ? AdminTheme.primaryBlue
+                                                          .withOpacity(0.3)
+                                                      : Colors.transparent,
+                                                ),
+                                              ),
+                                              child: Center(
+                                                child: Text(
+                                                  'Fixed Time',
+                                                  style: TextStyle(
+                                                    fontSize: 14,
+                                                    fontWeight: FontWeight.w600,
+                                                    color: !useDelay
+                                                        ? AdminTheme.primaryBlue
+                                                        : Colors.grey.shade600,
+                                                  ),
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                                 ),
-                                decoration: InputDecoration(
-                                  labelText: useDelay ? 'Delay after Adhan' : 'Iqamah Time',
-                                  hintText: useDelay ? 'Enter minutes' : 'HH:MM',
-                                  border: OutlineInputBorder(
-                                    borderRadius: BorderRadius.circular(12),
-                                    borderSide: BorderSide(color: Colors.grey.shade300),
+                                const SizedBox(height: 20),
+
+                                // Input Field
+                                TextField(
+                                  controller: useDelay
+                                      ? _delayControllers[prayer]
+                                      : _iqamahControllers[prayer],
+                                  keyboardType: useDelay
+                                      ? TextInputType.number
+                                      : TextInputType.text,
+                                  style: const TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w500,
+                                    color: AdminTheme.textPrimary,
                                   ),
-                                  enabledBorder: OutlineInputBorder(
-                                    borderRadius: BorderRadius.circular(12),
-                                    borderSide: BorderSide(color: Colors.grey.shade300),
+                                  decoration: InputDecoration(
+                                    labelText: useDelay
+                                        ? 'Delay after Adhan'
+                                        : 'Iqamah Time',
+                                    hintText:
+                                        useDelay ? 'Enter minutes' : 'HH:MM',
+                                    border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(12),
+                                      borderSide: BorderSide(
+                                          color: Colors.grey.shade300),
+                                    ),
+                                    enabledBorder: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(12),
+                                      borderSide: BorderSide(
+                                          color: Colors.grey.shade300),
+                                    ),
+                                    focusedBorder: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(12),
+                                      borderSide: const BorderSide(
+                                          color: AdminTheme.primaryBlueLight,
+                                          width: 2),
+                                    ),
+                                    contentPadding: const EdgeInsets.symmetric(
+                                        horizontal: 16, vertical: 16),
+                                    suffixIcon: Icon(
+                                      useDelay
+                                          ? Icons.timer_outlined
+                                          : Icons.schedule,
+                                      color: Colors.grey.shade400,
+                                      size: 20,
+                                    ),
+                                    suffixText: useDelay ? 'min' : null,
                                   ),
-                                  focusedBorder: OutlineInputBorder(
-                                    borderRadius: BorderRadius.circular(12),
-                                    borderSide: const BorderSide(color: AdminTheme.primaryBlueLight, width: 2),
-                                  ),
-                                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-                                  suffixIcon: Icon(
-                                    useDelay ? Icons.timer_outlined : Icons.schedule,
-                                    color: Colors.grey.shade400,
-                                    size: 20,
-                                  ),
-                                  suffixText: useDelay ? 'min' : null,
+                                  // Do not save on each keystroke; save on button press.
                                 ),
-                                // Do not save on each keystroke; save on button press.
-                              ),
-                            ],
+                              ],
+                            ),
                           ),
+                        );
+                      }).toList(),
+                    ),
+                ],
+              ),
+            ),
+
+            // Save Button
+            Container(
+              padding: const EdgeInsets.all(24),
+              decoration: BoxDecoration(
+                color: Colors.grey.shade50,
+                borderRadius: const BorderRadius.only(
+                  bottomLeft: Radius.circular(24),
+                  bottomRight: Radius.circular(24),
+                ),
+                border: Border(
+                  top: BorderSide(color: Colors.grey.shade200),
+                ),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  ElevatedButton(
+                    onPressed: () async {
+                      final settings = provider.prayerSettings;
+                      if (settings == null) return;
+
+                      final updatedPrayerTimes =
+                          Map<String, PrayerTime>.from(settings.prayerTimes);
+                      final updatedUseDelay = <String, bool>{};
+
+                      for (final prayer in settings.prayerTimes.keys) {
+                        final useDelay = _useDelayControllers[prayer] ??
+                            (settings.iqamahUseDelay[prayer] ?? true);
+                        updatedUseDelay[prayer] = useDelay;
+
+                        final existing = updatedPrayerTimes[prayer];
+                        if (existing == null) continue;
+
+                        if (useDelay) {
+                          final delayCtrl = _delayControllers[prayer];
+                          final delayMinutes =
+                              int.tryParse(delayCtrl?.text.trim() ?? '');
+                          updatedPrayerTimes[prayer] = existing.copyWith(
+                            delay: delayMinutes ?? existing.delay,
+                          );
+                        } else {
+                          final iqamahCtrl = _iqamahControllers[prayer];
+                          updatedPrayerTimes[prayer] = existing.copyWith(
+                            iqamah: (iqamahCtrl?.text ?? '').trim(),
+                          );
+                        }
+                      }
+
+                      await provider.savePrayerTimesBulk(
+                        prayerTimes: updatedPrayerTimes,
+                        iqamahUseDelay: updatedUseDelay,
+                      );
+
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content:
+                              const Text('Iqamah times saved successfully'),
+                          backgroundColor: AdminTheme.accentEmerald,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          behavior: SnackBarBehavior.floating,
                         ),
                       );
-                    }).toList(),
-                  ),
-              ],
-            ),
-          ),
-          
-          // Save Button
-          Container(
-            padding: const EdgeInsets.all(24),
-            decoration: BoxDecoration(
-              color: Colors.grey.shade50,
-              borderRadius: const BorderRadius.only(
-                bottomLeft: Radius.circular(24),
-                bottomRight: Radius.circular(24),
-              ),
-              border: Border(
-                top: BorderSide(color: Colors.grey.shade200),
-              ),
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                ElevatedButton(
-                  onPressed: () async {
-                    final settings = provider.prayerSettings;
-                    if (settings == null) return;
-
-                    final updatedPrayerTimes = Map<String, PrayerTime>.from(settings.prayerTimes);
-                    final updatedUseDelay = <String, bool>{};
-
-                    for (final prayer in settings.prayerTimes.keys) {
-                      final useDelay = _useDelayControllers[prayer] ?? (settings.iqamahUseDelay[prayer] ?? true);
-                      updatedUseDelay[prayer] = useDelay;
-
-                      final existing = updatedPrayerTimes[prayer];
-                      if (existing == null) continue;
-
-                      if (useDelay) {
-                        final delayCtrl = _delayControllers[prayer];
-                        final delayMinutes = int.tryParse(delayCtrl?.text.trim() ?? '');
-                        updatedPrayerTimes[prayer] = existing.copyWith(
-                          delay: delayMinutes ?? existing.delay,
-                        );
-                      } else {
-                        final iqamahCtrl = _iqamahControllers[prayer];
-                        updatedPrayerTimes[prayer] = existing.copyWith(
-                          iqamah: (iqamahCtrl?.text ?? '').trim(),
-                        );
-                      }
-                    }
-
-                    await provider.savePrayerTimesBulk(
-                      prayerTimes: updatedPrayerTimes,
-                      iqamahUseDelay: updatedUseDelay,
-                    );
-
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: const Text('Iqamah times saved successfully'),
-                        backgroundColor: AdminTheme.accentEmerald,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        behavior: SnackBarBehavior.floating,
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AdminTheme.primaryBlueLight,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 32, vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
                       ),
-                    );
-                  },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AdminTheme.primaryBlueLight,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 14),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
+                      elevation: 0,
                     ),
-                    elevation: 0,
-                  ),
-                  child: const Text(
-                    'Save Iqamah Settings',
-                    style: TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w600,
+                    child: const Text(
+                      'Save Iqamah Settings',
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
-        ],
-      ),
+          ],
+        ),
       ),
     );
   }
@@ -2619,33 +3018,45 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
               ],
             ),
             const SizedBox(height: 32),
-            
+
             // Calculation Method
             _buildDropdownSetting(
               title: 'Calculation Method',
-              value: provider.prayerSettings?.calculationSettings.method ?? 'MWL',
+              value:
+                  provider.prayerSettings?.calculationSettings.method ?? 'MWL',
               options: const [
-                DropdownMenuItem(value: 'MWL', child: Text('Muslim World League')),
-                DropdownMenuItem(value: 'ISNA', child: Text('Islamic Society of North America')),
-                DropdownMenuItem(value: 'Egypt', child: Text('Egyptian General Authority')),
-                DropdownMenuItem(value: 'Makkah', child: Text('Umm al-Qura University, Makkah')),
-                DropdownMenuItem(value: 'Karachi', child: Text('University of Islamic Sciences, Karachi')),
+                DropdownMenuItem(
+                    value: 'MWL', child: Text('Muslim World League')),
+                DropdownMenuItem(
+                    value: 'ISNA',
+                    child: Text('Islamic Society of North America')),
+                DropdownMenuItem(
+                    value: 'Egypt', child: Text('Egyptian General Authority')),
+                DropdownMenuItem(
+                    value: 'Makkah',
+                    child: Text('Umm al-Qura University, Makkah')),
+                DropdownMenuItem(
+                    value: 'Karachi',
+                    child: Text('University of Islamic Sciences, Karachi')),
                 DropdownMenuItem(value: 'Custom', child: Text('Custom Method')),
               ],
               onChanged: (value) async {
                 if (value != null && provider.prayerSettings != null) {
-                  final newSettings = provider.prayerSettings!.calculationSettings.copyWith(method: value);
+                  final newSettings = provider
+                      .prayerSettings!.calculationSettings
+                      .copyWith(method: value);
                   await provider.updateCalculationSettings(newSettings);
                 }
               },
             ),
-            
+
             const SizedBox(height: 24),
-            
+
             // Asr Method
             _buildDropdownSetting(
               title: 'Asr Calculation Method',
-              value: provider.prayerSettings?.calculationSettings.asrMethod ?? 'Shafi',
+              value: provider.prayerSettings?.calculationSettings.asrMethod ??
+                  'Shafi',
               options: ['Shafi', 'Hanafi'].map((String value) {
                 return DropdownMenuItem<String>(
                   value: value,
@@ -2654,26 +3065,34 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
               }).toList(),
               onChanged: (value) async {
                 if (value != null && provider.prayerSettings != null) {
-                  final newSettings = provider.prayerSettings!.calculationSettings.copyWith(asrMethod: value);
+                  final newSettings = provider
+                      .prayerSettings!.calculationSettings
+                      .copyWith(asrMethod: value);
                   await provider.updateCalculationSettings(newSettings);
                 }
               },
             ),
-            
+
             const SizedBox(height: 24),
-            
+
             // High Latitude Rule
             _buildDropdownSetting(
               title: 'High Latitude Rule',
-              value: provider.prayerSettings?.calculationSettings.adjustmentMethod ?? 'AngleBased',
+              value: provider
+                      .prayerSettings?.calculationSettings.adjustmentMethod ??
+                  'AngleBased',
               options: const [
                 DropdownMenuItem(value: 'Midnight', child: Text('Midnight')),
-                DropdownMenuItem(value: 'OneSeventh', child: Text('One Seventh')),
-                DropdownMenuItem(value: 'AngleBased', child: Text('Angle Based')),
+                DropdownMenuItem(
+                    value: 'OneSeventh', child: Text('One Seventh')),
+                DropdownMenuItem(
+                    value: 'AngleBased', child: Text('Angle Based')),
               ],
               onChanged: (value) async {
                 if (value != null && provider.prayerSettings != null) {
-                  final newSettings = provider.prayerSettings!.calculationSettings.copyWith(adjustmentMethod: value);
+                  final newSettings = provider
+                      .prayerSettings!.calculationSettings
+                      .copyWith(adjustmentMethod: value);
                   await provider.updateCalculationSettings(newSettings);
                 }
               },
@@ -2687,24 +3106,88 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
   Widget _buildLocationSettings(PrayerTimesProvider provider) {
     // Common cities for autocomplete
     final commonCities = [
-      'New York', 'Los Angeles', 'Chicago', 'Houston', 'Phoenix',
-      'London', 'Birmingham', 'Manchester', 'Leeds', 'Glasgow',
-      'Toronto', 'Montreal', 'Vancouver', 'Calgary', 'Ottawa',
-      'Dubai', 'Abu Dhabi', 'Sharjah', 'Riyadh', 'Jeddah', 'Mecca', 'Medina',
-      'Cairo', 'Alexandria', 'Giza', 'Casablanca', 'Rabat',
-      'Karachi', 'Lahore', 'Islamabad', 'Dhaka', 'Chittagong',
-      'Jakarta', 'Kuala Lumpur', 'Singapore', 'Istanbul', 'Ankara',
-      'Paris', 'Berlin', 'Amsterdam', 'Brussels', 'Vienna',
-      'Sydney', 'Melbourne', 'Brisbane', 'Perth', 'Auckland',
-      'Mumbai', 'Delhi', 'Bangalore', 'Hyderabad', 'Chennai',
+      'New York',
+      'Los Angeles',
+      'Chicago',
+      'Houston',
+      'Phoenix',
+      'London',
+      'Birmingham',
+      'Manchester',
+      'Leeds',
+      'Glasgow',
+      'Toronto',
+      'Montreal',
+      'Vancouver',
+      'Calgary',
+      'Ottawa',
+      'Dubai',
+      'Abu Dhabi',
+      'Sharjah',
+      'Riyadh',
+      'Jeddah',
+      'Mecca',
+      'Medina',
+      'Cairo',
+      'Alexandria',
+      'Giza',
+      'Casablanca',
+      'Rabat',
+      'Karachi',
+      'Lahore',
+      'Islamabad',
+      'Dhaka',
+      'Chittagong',
+      'Jakarta',
+      'Kuala Lumpur',
+      'Singapore',
+      'Istanbul',
+      'Ankara',
+      'Paris',
+      'Berlin',
+      'Amsterdam',
+      'Brussels',
+      'Vienna',
+      'Sydney',
+      'Melbourne',
+      'Brisbane',
+      'Perth',
+      'Auckland',
+      'Mumbai',
+      'Delhi',
+      'Bangalore',
+      'Hyderabad',
+      'Chennai',
     ];
-    
+
     final commonCountries = [
-      'USA', 'United States', 'UK', 'United Kingdom', 'Canada', 'Australia',
-      'UAE', 'United Arab Emirates', 'Saudi Arabia', 'Egypt', 'Morocco',
-      'Pakistan', 'Bangladesh', 'India', 'Indonesia', 'Malaysia', 'Singapore',
-      'Turkey', 'France', 'Germany', 'Netherlands', 'Belgium', 'Austria',
-      'South Africa', 'Nigeria', 'Kenya', 'New Zealand',
+      'USA',
+      'United States',
+      'UK',
+      'United Kingdom',
+      'Canada',
+      'Australia',
+      'UAE',
+      'United Arab Emirates',
+      'Saudi Arabia',
+      'Egypt',
+      'Morocco',
+      'Pakistan',
+      'Bangladesh',
+      'India',
+      'Indonesia',
+      'Malaysia',
+      'Singapore',
+      'Turkey',
+      'France',
+      'Germany',
+      'Netherlands',
+      'Belgium',
+      'Austria',
+      'South Africa',
+      'Nigeria',
+      'Kenya',
+      'New Zealand',
     ];
 
     return Container(
@@ -2767,47 +3250,226 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
               ],
             ),
             const SizedBox(height: 32),
-            
-            // City and Country Row with Autocomplete
+
+            // Country (left) and City (right) Row with Autocomplete.
+            // City suggestions are filtered based on the selected country.
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                // Country first (left)
                 Expanded(
                   child: _buildAutocompleteField(
-                    controller: _cityController,
-                    label: 'City',
-                    hint: 'e.g., New York',
-                    icon: Icons.location_city,
-                    suggestions: commonCities,
+                    controller: _countryController,
+                    label: 'Country',
+                    hint: 'e.g., Australia',
+                    icon: Icons.public,
+                    suggestions: _countries.isNotEmpty ? _countries : commonCountries,
+                    suffixWidget: _loadingCountries ? Padding(padding: const EdgeInsets.all(10), child: SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))) : null,
                     onChanged: (value) async {
                       if (provider.prayerSettings != null) {
-                        final newLocation = provider.prayerSettings!.location.copyWith(city: value);
+                        final newLocation = provider.prayerSettings!.location.copyWith(country: value);
                         await provider.updateLocationSettings(newLocation);
+
+                        // Clear city suggestions when country changes
+                        setState(() {
+                          _cityApiSuggestions = [];
+                          _loadingCountryCities = false;
+                          _selectedCountryForCache = null;
+                        });
+
+                        // Attempt to prefetch a full city list for this country (GeoNames) if available
+                        _prefetchCountryCities(value);
+
+                        // If current city likely not in new country, clear it
+                        final selectedCountry = value.trim();
+                        final cityList = _countryToCitiesMap()[selectedCountry.toLowerCase()];
+                        if (cityList != null && !_cityController.text.isEmpty) {
+                          final cityText = _cityController.text.trim();
+                          final found = cityList.any((c) => c.toLowerCase() == cityText.toLowerCase());
+                          if (!found) {
+                            _cityController.text = '';
+                            await provider.updateLocationSettings(newLocation.copyWith(city: ''));
+                          }
+                        }
                       }
                     },
                   ),
                 ),
                 const SizedBox(width: 20),
+                // City input uses suggestions filtered by country
                 Expanded(
-                  child: _buildAutocompleteField(
-                    controller: _countryController,
-                    label: 'Country',
-                    hint: 'e.g., USA',
-                    icon: Icons.public,
-                    suggestions: commonCountries,
-                    onChanged: (value) async {
-                      if (provider.prayerSettings != null) {
-                        final newLocation = provider.prayerSettings!.location.copyWith(country: value);
-                        await provider.updateLocationSettings(newLocation);
-                      }
-                    },
-                  ),
+                  child: Builder(builder: (context) {
+                    // compute suggestions based on API-backed results
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'City',
+                          style: const TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w600,
+                            color: AdminTheme.textPrimary,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Autocomplete<String>(
+                          initialValue: TextEditingValue(text: _cityController.text),
+                          optionsBuilder: (textEditingValue) {
+                            final q = textEditingValue.text.trim();
+                            if (q.isEmpty) return const Iterable<String>.empty();
+
+                            // If we don't have API suggestions yet and user typed >=2 chars,
+                            // kick off a search proactively.
+                            if (!_loadingCitySuggestions && _cityApiSuggestions.isEmpty && q.length >= 2) {
+                              _searchCitiesDebounced(q);
+                            }
+
+                            final lowerQ = q.toLowerCase();
+
+                            // Local fallback: country -> city mappings
+                            final countryText = _countryController.text.trim().toLowerCase();
+                            final map = _countryToCitiesMap();
+                            List<String> local = [];
+                            if (countryText.isNotEmpty) {
+                              if (map.containsKey(countryText)) {
+                                local = map[countryText]!.where((c) => c.toLowerCase().contains(lowerQ)).toList();
+                              } else {
+                                final matchKey = map.keys.firstWhere((k) => k.contains(countryText) || countryText.contains(k), orElse: () => '');
+                                if (matchKey.isNotEmpty && map.containsKey(matchKey)) {
+                                  local = map[matchKey]!.where((c) => c.toLowerCase().contains(lowerQ)).toList();
+                                }
+                              }
+                            }
+
+                            final api = _cityApiSuggestions.where((o) => o.toLowerCase().contains(lowerQ)).toList();
+
+                            // Merge API results (prefer) with local fallback and dedupe
+                            final merged = <String>[];
+                            for (final s in api) {
+                              if (!merged.contains(s)) merged.add(s);
+                            }
+                            for (final s in local) {
+                              if (!merged.contains(s)) merged.add(s);
+                            }
+
+                            return merged;
+                          },
+                          onSelected: (selection) async {
+                            // Teleport/Nominatim/GeoNames return 'City, Region, Country' — extract city name
+                            final cityName = selection.split(',').first.trim();
+                            _cityController.text = cityName;
+                            if (provider.prayerSettings != null) {
+                              double lat = 0.0;
+                              double lon = 0.0;
+                              try {
+                                final country = _countryController.text.trim();
+                                // Try to resolve coordinates using cache or Nominatim fallback
+                                final coords = await LocationAutocompleteService.resolveToCoordinates(selection, country: country.isEmpty ? null : country);
+                                if (coords != null) {
+                                  lat = coords['lat']!;
+                                  lon = coords['lon']!;
+                                }
+                              } catch (e) {
+                                debugPrint('resolveToCoordinates error: $e');
+                              }
+
+                              final newLocation = provider.prayerSettings!.location.copyWith(city: cityName, latitude: lat, longitude: lon);
+                              await provider.updateLocationSettings(newLocation);
+                            }
+                          },
+                          fieldViewBuilder: (context, textController, focusNode, onFieldSubmitted) {
+                            if (_cityController.text.isNotEmpty && textController.text.isEmpty) {
+                              textController.text = _cityController.text;
+                            }
+                            return TextField(
+                              controller: textController,
+                              focusNode: focusNode,
+                              style: const TextStyle(fontSize: 15, color: AdminTheme.textPrimary),
+                              decoration: InputDecoration(
+                                hintText: 'e.g., New York',
+                                hintStyle: TextStyle(color: Colors.grey.shade400),
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: BorderSide(color: Colors.grey.shade300),
+                                ),
+                                enabledBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: BorderSide(color: Colors.grey.shade300),
+                                ),
+                                focusedBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: const BorderSide(color: AdminTheme.accentEmerald, width: 2),
+                                ),
+                                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                                prefixIcon: Icon(Icons.location_city, color: Colors.grey.shade400, size: 20),
+                                suffixIcon: _loadingCitySuggestions ? Padding(padding: const EdgeInsets.all(12), child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))) : (_loadingCountryCities ? Padding(padding: const EdgeInsets.all(12), child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))) : null),
+                              ),
+                              onChanged: (value) {
+                                _cityController.text = value;
+                                // trigger API search
+                                if (value.trim().length >= 2) {
+                                  _searchCitiesDebounced(value.trim());
+                                } else {
+                                  setState(() => _cityApiSuggestions = []);
+                                }
+                                // still let provider update
+                                if (provider.prayerSettings != null) {
+                                  provider.updateLocationSettings(provider.prayerSettings!.location.copyWith(city: value));
+                                }
+                              },
+                            );
+                          },
+                          optionsViewBuilder: (context, onSelected, options) {
+                            return Align(
+                              alignment: Alignment.topLeft,
+                              child: Material(
+                                elevation: 4,
+                                borderRadius: BorderRadius.circular(12),
+                                child: ConstrainedBox(
+                                  constraints: const BoxConstraints(maxHeight: 200, maxWidth: 400),
+                                  child: Builder(builder: (ctx) {
+                                    if (_loadingCitySuggestions && options.isEmpty) {
+                                      return const Padding(
+                                        padding: EdgeInsets.all(12),
+                                        child: SizedBox(width: 200, child: Text('Searching...')),
+                                      );
+                                    }
+
+                                    if (!_loadingCitySuggestions && options.isEmpty) {
+                                      return const Padding(
+                                        padding: EdgeInsets.all(12),
+                                        child: SizedBox(width: 200, child: Text('No results')),
+                                      );
+                                    }
+
+                                    return ListView.builder(
+                                      padding: EdgeInsets.zero,
+                                      shrinkWrap: true,
+                                      itemCount: options.length,
+                                      itemBuilder: (context, index) {
+                                        final option = options.elementAt(index);
+                                        return ListTile(
+                                          title: Text(option),
+                                          onTap: () => onSelected(option),
+                                          dense: true,
+                                        );
+                                      },
+                                    );
+                                  }),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ],
+                    );
+                  }),
                 ),
               ],
             ),
-            
+
             const SizedBox(height: 24),
-            
+
             // Latitude and Longitude Row
             Row(
               children: [
@@ -2821,7 +3483,8 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
                     onChanged: (value) async {
                       if (provider.prayerSettings != null) {
                         final latitude = double.tryParse(value) ?? 0.0;
-                        final newLocation = provider.prayerSettings!.location.copyWith(latitude: latitude);
+                        final newLocation = provider.prayerSettings!.location
+                            .copyWith(latitude: latitude);
                         await provider.updateLocationSettings(newLocation);
                       }
                     },
@@ -2838,7 +3501,8 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
                     onChanged: (value) async {
                       if (provider.prayerSettings != null) {
                         final longitude = double.tryParse(value) ?? 0.0;
-                        final newLocation = provider.prayerSettings!.location.copyWith(longitude: longitude);
+                        final newLocation = provider.prayerSettings!.location
+                            .copyWith(longitude: longitude);
                         await provider.updateLocationSettings(newLocation);
                       }
                     },
@@ -2859,6 +3523,7 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
     required IconData icon,
     required List<String> suggestions,
     required ValueChanged<String> onChanged,
+    Widget? suffixWidget,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2878,14 +3543,16 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
             if (textEditingValue.text.isEmpty) {
               return const Iterable<String>.empty();
             }
-            return suggestions.where((option) =>
-                option.toLowerCase().contains(textEditingValue.text.toLowerCase()));
+            return suggestions.where((option) => option
+                .toLowerCase()
+                .contains(textEditingValue.text.toLowerCase()));
           },
           onSelected: (selection) {
             controller.text = selection;
             onChanged(selection);
           },
-          fieldViewBuilder: (context, textController, focusNode, onFieldSubmitted) {
+          fieldViewBuilder:
+              (context, textController, focusNode, onFieldSubmitted) {
             // Sync the external controller with autocomplete controller
             if (controller.text.isNotEmpty && textController.text.isEmpty) {
               textController.text = controller.text;
@@ -2893,7 +3560,8 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
             return TextField(
               controller: textController,
               focusNode: focusNode,
-              style: const TextStyle(fontSize: 15, color: AdminTheme.textPrimary),
+              style:
+                  const TextStyle(fontSize: 15, color: AdminTheme.textPrimary),
               decoration: InputDecoration(
                 hintText: hint,
                 hintStyle: TextStyle(color: Colors.grey.shade400),
@@ -2907,10 +3575,13 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
                 ),
                 focusedBorder: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(12),
-                  borderSide: const BorderSide(color: AdminTheme.accentEmerald, width: 2),
+                  borderSide: const BorderSide(
+                      color: AdminTheme.accentEmerald, width: 2),
                 ),
-                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
                 prefixIcon: Icon(icon, color: Colors.grey.shade400, size: 20),
+                suffixIcon: suffixWidget,
               ),
               onChanged: (value) {
                 controller.text = value;
@@ -2925,7 +3596,8 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
                 elevation: 4,
                 borderRadius: BorderRadius.circular(12),
                 child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxHeight: 200, maxWidth: 300),
+                  constraints:
+                      const BoxConstraints(maxHeight: 200, maxWidth: 300),
                   child: ListView.builder(
                     padding: EdgeInsets.zero,
                     shrinkWrap: true,
@@ -3009,7 +3681,7 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
               ],
             ),
             const SizedBox(height: 32),
-            
+
             // Current Settings Info
             Container(
               padding: const EdgeInsets.all(20),
@@ -3021,7 +3693,8 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
                   ],
                 ),
                 borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: AdminTheme.primaryBlueLight.withOpacity(0.2)),
+                border: Border.all(
+                    color: AdminTheme.primaryBlueLight.withOpacity(0.2)),
               ),
               child: Column(
                 children: [
@@ -3038,13 +3711,16 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
                       ),
                       Flexible(
                         child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 6),
                           decoration: BoxDecoration(
                             color: AdminTheme.primaryBlueLight.withOpacity(0.1),
                             borderRadius: BorderRadius.circular(20),
                           ),
                           child: Text(
-                            provider.prayerSettings?.calculationSettings.method ?? 'N/A',
+                            provider.prayerSettings?.calculationSettings
+                                    .method ??
+                                'N/A',
                             style: const TextStyle(
                               fontWeight: FontWeight.w600,
                               color: AdminTheme.primaryBlueLight,
@@ -3070,7 +3746,8 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
                       ),
                       Flexible(
                         child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 6),
                           decoration: BoxDecoration(
                             color: AdminTheme.accentEmerald.withOpacity(0.1),
                             borderRadius: BorderRadius.circular(20),
@@ -3091,78 +3768,88 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
                 ],
               ),
             ),
-            
+
             const SizedBox(height: 32),
-            
+
             SizedBox(
               width: double.infinity,
               child: ElevatedButton.icon(
-                onPressed: provider.isCalculating 
-                  ? null 
-                  : () async {
-                    if (provider.prayerSettings == null || 
-                        (provider.prayerSettings!.location.latitude == 0.0 && 
-                         provider.prayerSettings!.location.longitude == 0.0 &&
-                         provider.prayerSettings!.location.city.isEmpty)) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: const Row(
-                            children: [
-                              Icon(Icons.warning_amber, color: Colors.white, size: 20),
-                              SizedBox(width: 8),
-                              Expanded(child: Text('Location not set! Please set location first.')),
-                            ],
-                          ),
-                          backgroundColor: AdminTheme.accentRedLight,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          behavior: SnackBarBehavior.floating,
-                        ),
-                      );
-                      return;
-                    }
+                onPressed: provider.isCalculating
+                    ? null
+                    : () async {
+                        if (provider.prayerSettings == null ||
+                            (provider.prayerSettings!.location.latitude ==
+                                    0.0 &&
+                                provider.prayerSettings!.location.longitude ==
+                                    0.0 &&
+                                provider
+                                    .prayerSettings!.location.city.isEmpty)) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: const Row(
+                                children: [
+                                  Icon(Icons.warning_amber,
+                                      color: Colors.white, size: 20),
+                                  SizedBox(width: 8),
+                                  Expanded(
+                                      child: Text(
+                                          'Location not set! Please set location first.')),
+                                ],
+                              ),
+                              backgroundColor: AdminTheme.accentRedLight,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              behavior: SnackBarBehavior.floating,
+                            ),
+                          );
+                          return;
+                        }
 
-                    try {
-                      await provider.calculatePrayerTimes();
-                      _updateControllers();
-                      setState(() {});
-                      
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: const Row(
-                            children: [
-                              Icon(Icons.check_circle, color: Colors.white, size: 20),
-                              SizedBox(width: 8),
-                              Expanded(child: Text('Prayer times recalculated successfully!')),
-                            ],
-                          ),
-                          backgroundColor: AdminTheme.accentEmerald,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          behavior: SnackBarBehavior.floating,
-                        ),
-                      );
-                    } catch (e) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Row(
-                            children: [
-                              const Icon(Icons.error_outline, color: Colors.white, size: 20),
-                              const SizedBox(width: 8),
-                              Expanded(child: Text('Error: $e')),
-                            ],
-                          ),
-                          backgroundColor: AdminTheme.accentRedLight,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          behavior: SnackBarBehavior.floating,
-                        ),
-                      );
-                    }
-                  },
+                        try {
+                          await provider.calculatePrayerTimes();
+                          _updateControllers();
+                          setState(() {});
+
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: const Row(
+                                children: [
+                                  Icon(Icons.check_circle,
+                                      color: Colors.white, size: 20),
+                                  SizedBox(width: 8),
+                                  Expanded(
+                                      child: Text(
+                                          'Prayer times recalculated successfully!')),
+                                ],
+                              ),
+                              backgroundColor: AdminTheme.accentEmerald,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              behavior: SnackBarBehavior.floating,
+                            ),
+                          );
+                        } catch (e) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Row(
+                                children: [
+                                  const Icon(Icons.error_outline,
+                                      color: Colors.white, size: 20),
+                                  const SizedBox(width: 8),
+                                  Expanded(child: Text('Error: $e')),
+                                ],
+                              ),
+                              backgroundColor: AdminTheme.accentRedLight,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              behavior: SnackBarBehavior.floating,
+                            ),
+                          );
+                        }
+                      },
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AdminTheme.primaryBlueLight,
                   foregroundColor: Colors.white,
@@ -3173,30 +3860,65 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
                   elevation: 0,
                 ),
                 icon: provider.isCalculating
-                  ? SizedBox(
-                      height: 20,
-                      width: 20,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                      ),
-                    )
-                  : const Icon(Icons.refresh, size: 20),
+                    ? SizedBox(
+                        height: 20,
+                        width: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor:
+                              AlwaysStoppedAnimation<Color>(Colors.white),
+                        ),
+                      )
+                    : const Icon(Icons.refresh, size: 20),
                 label: provider.isCalculating
-                  ? const Text('Calculating...')
-                  : const Text(
-                      'Recalculate Prayer Times',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
+                    ? const Text('Calculating...')
+                    : const Text(
+                        'Recalculate Prayer Times',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
-                    ),
               ),
             ),
           ],
         ),
       ),
     );
+  }
+
+  // Returns a lowercase-keyed map of country -> common cities to be used
+  // for filtering city suggestions based on the selected country.
+  Map<String, List<String>> _countryToCitiesMap() {
+    return {
+      'usa': ['New York', 'Los Angeles', 'Chicago', 'Houston', 'Phoenix'],
+      'united states': ['New York', 'Los Angeles', 'Chicago', 'Houston', 'Phoenix'],
+      'uk': ['London', 'Birmingham', 'Manchester', 'Leeds', 'Glasgow'],
+      'united kingdom': ['London', 'Birmingham', 'Manchester', 'Leeds', 'Glasgow'],
+      'canada': ['Toronto', 'Montreal', 'Vancouver', 'Calgary', 'Ottawa'],
+      'australia': ['Sydney', 'Melbourne', 'Brisbane', 'Perth'],
+      'uae': ['Dubai', 'Abu Dhabi', 'Sharjah'],
+      'united arab emirates': ['Dubai', 'Abu Dhabi', 'Sharjah'],
+      'saudi arabia': ['Riyadh', 'Jeddah', 'Mecca', 'Medina'],
+      'egypt': ['Cairo', 'Alexandria', 'Giza'],
+      'morocco': ['Casablanca', 'Rabat'],
+      'pakistan': ['Karachi', 'Lahore', 'Islamabad'],
+      'bangladesh': ['Dhaka', 'Chittagong'],
+      'india': ['Mumbai', 'Delhi', 'Bangalore', 'Hyderabad', 'Chennai'],
+      'indonesia': ['Jakarta'],
+      'malaysia': ['Kuala Lumpur'],
+      'singapore': ['Singapore'],
+      'turkey': ['Istanbul', 'Ankara'],
+      'france': ['Paris'],
+      'germany': ['Berlin'],
+      'netherlands': ['Amsterdam'],
+      'belgium': ['Brussels'],
+      'austria': ['Vienna'],
+      'south africa': [],
+      'nigeria': [],
+      'kenya': [],
+      'new zealand': ['Auckland'],
+    };
   }
 
   Widget _buildImportSection() {
@@ -3260,7 +3982,6 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
               ],
             ),
             const SizedBox(height: 32),
-            
             Container(
               height: 120,
               decoration: BoxDecoration(
@@ -3300,9 +4021,7 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
                 ),
               ),
             ),
-            
             const SizedBox(height: 24),
-            
             SizedBox(
               width: double.infinity,
               child: ElevatedButton.icon(
@@ -3361,7 +4080,8 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
             value: value,
             decoration: InputDecoration(
               border: InputBorder.none,
-              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 0),
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 0),
             ),
             items: options,
             onChanged: onChanged,
@@ -3418,9 +4138,11 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
             ),
             focusedBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(12),
-              borderSide: const BorderSide(color: AdminTheme.accentEmerald, width: 2),
+              borderSide:
+                  const BorderSide(color: AdminTheme.accentEmerald, width: 2),
             ),
-            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
             prefixIcon: Icon(
               icon,
               color: Colors.grey.shade400,
@@ -3472,4 +4194,3 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
     return text[0].toUpperCase() + text.substring(1);
   }
 }
-

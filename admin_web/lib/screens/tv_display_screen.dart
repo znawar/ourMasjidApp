@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
 
 import '../providers/auth_provider.dart';
+import '../providers/prayer_times_provider.dart';
 import '../utils/admin_theme.dart';
 
 class TvDisplayScreen extends StatefulWidget {
@@ -130,7 +131,7 @@ class _TvDisplayScreenState extends State<TvDisplayScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           // Modern Header
-          const PageHeader(
+          PageHeader(
             icon: Icons.tv,
             title: 'TV Display Manager',
             subtitle: 'Connect and manage TV displays for your masjid',
@@ -423,7 +424,8 @@ class _TvDisplayScreenState extends State<TvDisplayScreen> {
               final totalTvs = docs.length;
               
               // Count active TVs (those with lastSeen within last 5 minutes)
-              final now = DateTime.now();
+              final provider = Provider.of<PrayerTimesProvider>(context, listen: false);
+              final now = provider.masjidNow;
               int activeTvs = 0;
               for (final doc in docs) {
                 final data = doc.data() as Map<String, dynamic>;

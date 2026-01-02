@@ -1,4 +1,9 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:intl/intl.dart';
+import 'package:timezone/timezone.dart' as tz;
+import 'package:timezone/data/latest.dart' as tz_data;
 
 /// Centralized theme for the admin web application.
 /// This ensures consistent styling across all screens.
@@ -500,9 +505,203 @@ class PageHeader extends StatelessWidget {
               ],
             ),
           ),
-          if (trailing != null) trailing!,
+          if (trailing != null) trailing! else MasjidClock(),
         ],
       ),
     );
+  }
+}
+
+/// A scaffold that shows a persistent sidebar on wide screens and a
+/// Drawer-based sidebar on narrow screens. Use this for admin pages that
+/// need a sidebar + content layout that adapts to screen width.
+class ResponsiveScaffold extends StatelessWidget {
+  final Widget sidebar;
+  final Widget body;
+  final PreferredSizeWidget? appBar;
+  final double breakpoint;
+
+  const ResponsiveScaffold({
+    super.key,
+    required this.sidebar,
+    required this.body,
+    this.appBar,
+    this.breakpoint = 980,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final width = MediaQuery.of(context).size.width;
+    final isWide = width >= breakpoint;
+
+    if (isWide) {
+      return Scaffold(
+        appBar: appBar,
+        body: Row(
+          children: [
+            Container(
+              width: 300,
+              color: AdminTheme.backgroundSection,
+              child: SafeArea(child: sidebar),
+            ),
+            Expanded(child: body),
+          ],
+        ),
+      );
+    }
+
+    // Narrow: show sidebar as Drawer and keep body full width
+    return Scaffold(
+      appBar: appBar ?? AppBar(title: const SizedBox.shrink()),
+      drawer: Drawer(child: SafeArea(child: sidebar)),
+      body: body,
+    );
+  }
+}
+
+/// Small clock widget that shows the masjid-local current time (if available)
+/// by reading the `PrayerTimesProvider`'s saved location.
+class MasjidClock extends StatefulWidget {
+  const MasjidClock({super.key});
+
+  @override
+  State<MasjidClock> createState() => _MasjidClockState();
+}
+
+class _MasjidClockState extends State<MasjidClock> {
+  late Timer _timer;
+  DateTime _now = DateTime.now();
+
+  @override
+  void initState() {
+    super.initState();
+    // Ensure timezone database is initialized for TZDateTime usage
+    try {
+      tz_data.initializeTimeZones();
+    } catch (_) {}
+
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) => _tick());
+  }
+
+  void _tick() {
+    if (!mounted) return;
+    setState(() {
+      // Attempt to get masjid-local time via saved timezone id; fall back to offset
+      DateTime computed;
+      try {
+        final provider = Provider.of(context);
+        final loc = provider.prayerSettings?.location.toMap();
+
+        // Extract timezone id if available
+        String? tzName;
+        try {
+          final candidate = loc?['timezone'] ?? loc?['timezoneId'] ?? loc?['timeZone'] ?? loc?['timeZoneId'];
+          if (candidate is String && candidate.trim().isNotEmpty && candidate.trim().toLowerCase() != 'auto') {
+            tzName = candidate.trim();
+          }
+        } catch (_) {}
+
+        if (tzName != null) {
+          try {
+            final location = tz.getLocation(tzName);
+            computed = tz.TZDateTime.now(location).toLocal();
+          } catch (e) {
+            // If the tzName is not a valid IANA id, fall back to offset computation
+            computed = DateTime.now().toUtc().add(_offsetFromLocationDuration(loc));
+          }
+        } else {
+          computed = DateTime.now().toUtc().add(_offsetFromLocationDuration(loc));
+        }
+      } catch (_) {
+        computed = DateTime.now();
+      }
+
+      _now = computed;
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer.cancel();
+    super.dispose();
+  }
+
+  Duration _offsetFromLocationDuration(dynamic loc) {
+    try {
+      if (loc == null) return Duration.zero;
+      // If explicit numeric timezone offset is provided like +9 or +9:30
+      final tzField = loc['timezone'] ?? (loc['timezoneId'] ?? loc['timeZone'] ?? '');
+      if (tzField is String && tzField.trim().isNotEmpty && tzField.trim().toLowerCase() != 'auto') {
+        final s = tzField.trim();
+        // Match formats like +9, -5, +9:30
+        final match = RegExp(r'([+-]?\d{1,2})(?::(\d{1,2}))?').firstMatch(s);
+        if (match != null) {
+          final h = int.tryParse(match.group(1)!) ?? 0;
+          final m = match.group(2) != null ? int.tryParse(match.group(2)!) ?? 0 : 0;
+          final total = h * 60 + (h >= 0 ? m : -m);
+          return Duration(minutes: total);
+        }
+        // If it's an IANA-like id, we will not reach here because caller prefers tz.getLocation.
+      }
+
+      final city = (loc['city'] ?? '').toString().toLowerCase();
+      if (city.isNotEmpty && (city.contains('adelaide') || city.contains('sa'))) {
+        return const Duration(hours: 9, minutes: 30);
+      }
+
+      dynamic lon = loc['longitude'] ?? loc['lng'] ?? loc['lon'];
+      double? longitude;
+      if (lon is num) longitude = lon.toDouble();
+      if (lon is String) longitude = double.tryParse(lon);
+      if (longitude != null) {
+        // Compute offset in minutes using longitude/15 hours. Keep fractional offsets.
+        final double hours = longitude / 15.0;
+        final int totalMinutes = (hours * 60).round();
+        final int clamped = totalMinutes.clamp(-12 * 60, 14 * 60);
+        return Duration(minutes: clamped);
+      }
+    } catch (_) {}
+    return Duration.zero;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Read prayer settings from provider
+    dynamic loc;
+    try {
+      final provider = Provider.of(context);
+      loc = provider.prayerSettings?.location.toMap();
+    } catch (_) {
+      loc = null;
+    }
+
+    final offset = _offsetFromLocation(loc);
+    final utc = DateTime.now().toUtc();
+    final masjidLocal = utc.add(offset);
+    final timeStr = DateFormat.Hms().format(masjidLocal);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.grey.shade50,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.grey.shade200),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.access_time, size: 18, color: AdminTheme.primaryBlue),
+          const SizedBox(width: 8),
+          Text(
+            timeStr,
+            style: const TextStyle(fontWeight: FontWeight.w700, color: AdminTheme.primaryBlue),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Added missing method to fix the error
+  Duration _offsetFromLocation(dynamic loc) {
+    return _offsetFromLocationDuration(loc);
   }
 }

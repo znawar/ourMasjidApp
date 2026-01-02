@@ -28,7 +28,8 @@ class PrayerSettings {
     required this.lastUpdated,
   });
 
-  factory PrayerSettings.fromFirestore(Map<String, dynamic> data, String masjidId) {
+  factory PrayerSettings.fromFirestore(
+      Map<String, dynamic> data, String masjidId) {
     final prayerTimesMap = (data['prayerTimes'] as Map<String, dynamic>).map(
       (key, value) => MapEntry(key, PrayerTime.fromMap(value)),
     );
@@ -71,7 +72,8 @@ class PrayerSettings {
     return PrayerSettings(
       masjidId: masjidId,
       prayerTimes: prayerTimesMap,
-      calculationSettings: CalculationSettings.fromMap(data['calculationSettings']),
+      calculationSettings:
+          CalculationSettings.fromMap(data['calculationSettings']),
       location: LocationSettings.fromMap(data['location']),
       iqamahUseDelay: iqamahUseDelay,
       jumuahTimes: jumuahTimes,
@@ -96,7 +98,8 @@ class PrayerSettings {
       'iqamahUseDelay': iqamahUseDelay,
       'jumuahTimes': jumuahTimes,
       'specialTimes': specialTimes.toMap(),
-      'prayerTimeOverrides': prayerTimeOverrides.map((k, v) => MapEntry(k, v.toMap())),
+      'prayerTimeOverrides':
+          prayerTimeOverrides.map((k, v) => MapEntry(k, v.toMap())),
       'lastUpdated': Timestamp.fromDate(lastUpdated),
     };
   }
@@ -131,25 +134,37 @@ class SpecialTimes {
   final int iftarOffsetMinutes; // relative to Maghrib
   final int taraweehOffsetMinutes; // relative to Isha
   final bool ramadanModeEnabled;
-  final String? suhoorEndTime; // HH:mm format - when Suhoor ends
-  final String? iftarTime; // HH:mm format - when Iftar starts
+  final bool
+      useManualRamadanTimes; // true = use manual suhoor/iftar times, false = use calculated times
+  final String? suhoorEndTime; // HH:mm format - when Suhoor ends (manual)
+  final String? iftarTime; // HH:mm format - when Iftar starts (manual)
 
   const SpecialTimes({
     this.imsakOffsetMinutes = -15,
     this.iftarOffsetMinutes = 0,
     this.taraweehOffsetMinutes = 0,
     this.ramadanModeEnabled = false,
+    this.useManualRamadanTimes = false,
     this.suhoorEndTime,
     this.iftarTime,
   });
 
   factory SpecialTimes.fromMap(Map<String, dynamic> map) {
     return SpecialTimes(
-      imsakOffsetMinutes: map['imsakOffsetMinutes'] is int ? map['imsakOffsetMinutes'] as int : -15,
-      iftarOffsetMinutes: map['iftarOffsetMinutes'] is int ? map['iftarOffsetMinutes'] as int : 0,
-      taraweehOffsetMinutes: map['taraweehOffsetMinutes'] is int ? map['taraweehOffsetMinutes'] as int : 0,
+      imsakOffsetMinutes: map['imsakOffsetMinutes'] is int
+          ? map['imsakOffsetMinutes'] as int
+          : -15,
+      iftarOffsetMinutes: map['iftarOffsetMinutes'] is int
+          ? map['iftarOffsetMinutes'] as int
+          : 0,
+      taraweehOffsetMinutes: map['taraweehOffsetMinutes'] is int
+          ? map['taraweehOffsetMinutes'] as int
+          : 0,
       ramadanModeEnabled: map['ramadanModeEnabled'] == true,
-      suhoorEndTime: map['suhoorEndTime'] is String ? map['suhoorEndTime'] as String : null,
+      useManualRamadanTimes: map['useManualRamadanTimes'] == true,
+      suhoorEndTime: map['suhoorEndTime'] is String
+          ? map['suhoorEndTime'] as String
+          : null,
       iftarTime: map['iftarTime'] is String ? map['iftarTime'] as String : null,
     );
   }
@@ -160,6 +175,7 @@ class SpecialTimes {
       'iftarOffsetMinutes': iftarOffsetMinutes,
       'taraweehOffsetMinutes': taraweehOffsetMinutes,
       'ramadanModeEnabled': ramadanModeEnabled,
+      'useManualRamadanTimes': useManualRamadanTimes,
       if (suhoorEndTime != null) 'suhoorEndTime': suhoorEndTime,
       if (iftarTime != null) 'iftarTime': iftarTime,
     };
@@ -170,14 +186,18 @@ class SpecialTimes {
     int? iftarOffsetMinutes,
     int? taraweehOffsetMinutes,
     bool? ramadanModeEnabled,
+    bool? useManualRamadanTimes,
     String? suhoorEndTime,
     String? iftarTime,
   }) {
     return SpecialTimes(
       imsakOffsetMinutes: imsakOffsetMinutes ?? this.imsakOffsetMinutes,
       iftarOffsetMinutes: iftarOffsetMinutes ?? this.iftarOffsetMinutes,
-      taraweehOffsetMinutes: taraweehOffsetMinutes ?? this.taraweehOffsetMinutes,
+      taraweehOffsetMinutes:
+          taraweehOffsetMinutes ?? this.taraweehOffsetMinutes,
       ramadanModeEnabled: ramadanModeEnabled ?? this.ramadanModeEnabled,
+      useManualRamadanTimes:
+          useManualRamadanTimes ?? this.useManualRamadanTimes,
       suhoorEndTime: suhoorEndTime ?? this.suhoorEndTime,
       iftarTime: iftarTime ?? this.iftarTime,
     );
@@ -342,7 +362,7 @@ class LocationSettings {
       timezone: map['timezone'] ?? 'Auto',
     );
   }
-  
+
   Map<String, dynamic> toMap() {
     return {
       'latitude': latitude,

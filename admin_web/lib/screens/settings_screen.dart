@@ -31,7 +31,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const PageHeader(
+          PageHeader(
             icon: Icons.settings,
             title: 'Settings',
             subtitle: 'Configure your masjid settings',

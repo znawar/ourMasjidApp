@@ -87,8 +87,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
     try {
       // First, search Firebase for matching masjids
-      List<Map<String, dynamic>> firebaseMasjids = await _searchFirebaseMasjids(query);
-      
+      List<Map<String, dynamic>> firebaseMasjids =
+          await _searchFirebaseMasjids(query);
+
       // Then search OpenStreetMap for additional results
       final response = await http.get(
         Uri.parse(
@@ -114,7 +115,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
           if (lat != null && lon != null) {
             foundMasjids.add({
-              'id': place['place_id']?.toString() ?? 'search_${foundMasjids.length}',
+              'id': place['place_id']?.toString() ??
+                  'search_${foundMasjids.length}',
               'name': name.split(',').first.trim(),
               'address': name,
               'phone': 'Contact for details',
@@ -153,7 +155,8 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<List<Map<String, dynamic>>> _searchFirebaseMasjids(String query) async {
+  Future<List<Map<String, dynamic>>> _searchFirebaseMasjids(
+      String query) async {
     try {
       final FirebaseFirestore firestore = FirebaseFirestore.instance;
 
@@ -165,7 +168,8 @@ class _HomeScreenState extends State<HomeScreen> {
           .where('name', isLessThan: query + 'z')
           .get();
 
-      final List<QueryDocumentSnapshot> byMasjidNameDocs = <QueryDocumentSnapshot>[];
+      final List<QueryDocumentSnapshot> byMasjidNameDocs =
+          <QueryDocumentSnapshot>[];
       try {
         final QuerySnapshot byMasjidName = await firestore
             .collection('masjids')
@@ -180,7 +184,8 @@ class _HomeScreenState extends State<HomeScreen> {
       final Map<String, Map<String, dynamic>> merged = {};
       for (final doc in [...byName.docs, ...byMasjidNameDocs]) {
         final data = doc.data() as Map<String, dynamic>;
-        final displayName = (data['name'] ?? data['masjidName'] ?? 'Unknown Masjid').toString();
+        final displayName =
+            (data['name'] ?? data['masjidName'] ?? 'Unknown Masjid').toString();
         merged[doc.id] = {
           'id': doc.id,
           'name': displayName,
@@ -238,22 +243,25 @@ class _HomeScreenState extends State<HomeScreen> {
       final Position position = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.medium,
       );
-      
+
       setState(() {
-        userLocation = 'Location: ${position.latitude.toStringAsFixed(4)}, ${position.longitude.toStringAsFixed(4)}';
+        userLocation =
+            'Location: ${position.latitude.toStringAsFixed(4)}, ${position.longitude.toStringAsFixed(4)}';
         searchStatus = 'Searching for masjids...';
       });
 
-      final List<Map<String, dynamic>> nearbyMasjids = await _getRealNearbyMasjids(
+      final List<Map<String, dynamic>> nearbyMasjids =
+          await _getRealNearbyMasjids(
         position.latitude,
         position.longitude,
       );
 
       setState(() {
         masjids = nearbyMasjids;
-        searchStatus = masjids.isEmpty ? 'No masjids found in your area' : 'Found ${masjids.length} masjids near you';
+        searchStatus = masjids.isEmpty
+            ? 'No masjids found in your area'
+            : 'Found ${masjids.length} masjids near you';
       });
-      
     } catch (e) {
       setState(() {
         userLocation = 'Location access failed';
@@ -267,14 +275,17 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<List<Map<String, dynamic>>> _getRealNearbyMasjids(double lat, double lng) async {
+  Future<List<Map<String, dynamic>>> _getRealNearbyMasjids(
+      double lat, double lng) async {
     try {
       // Get masjids from Firebase
-      List<Map<String, dynamic>> firebaseMasjids = await _getNearbyFirebaseMasjids(lat, lng);
-      
+      List<Map<String, dynamic>> firebaseMasjids =
+          await _getNearbyFirebaseMasjids(lat, lng);
+
       // Get masjids from OpenStreetMap
-      List<Map<String, dynamic>> osmMasjids = await _getFromOpenStreetMap(lat, lng);
-      
+      List<Map<String, dynamic>> osmMasjids =
+          await _getFromOpenStreetMap(lat, lng);
+
       // Combine results with Firebase first
       final allMasjids = [...firebaseMasjids, ...osmMasjids];
       return allMasjids;
@@ -283,23 +294,25 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<List<Map<String, dynamic>>> _getNearbyFirebaseMasjids(double lat, double lng) async {
+  Future<List<Map<String, dynamic>>> _getNearbyFirebaseMasjids(
+      double lat, double lng) async {
     try {
       final FirebaseFirestore firestore = FirebaseFirestore.instance;
       const double radiusKm = 50;
-      
+
       // Simple approach: get all masjids and filter by distance
-      final QuerySnapshot snapshot = await firestore.collection('masjids').get();
-      
+      final QuerySnapshot snapshot =
+          await firestore.collection('masjids').get();
+
       final List<Map<String, dynamic>> results = [];
-      
+
       for (final doc in snapshot.docs) {
         final data = doc.data() as Map<String, dynamic>;
         final masjidLat = (data['latitude'] as num?)?.toDouble() ?? 0.0;
         final masjidLng = (data['longitude'] as num?)?.toDouble() ?? 0.0;
-        
+
         final distance = _calculateDistance(lat, lng, masjidLat, masjidLng);
-        
+
         if (distance <= radiusKm) {
           results.add({
             'id': doc.id,
@@ -317,9 +330,10 @@ class _HomeScreenState extends State<HomeScreen> {
           });
         }
       }
-      
+
       // Sort by distance
-      results.sort((a, b) => (a['distance'] as num).compareTo(b['distance'] as num));
+      results.sort(
+          (a, b) => (a['distance'] as num).compareTo(b['distance'] as num));
       return results;
     } catch (e) {
       print('Firebase nearby search error: $e');
@@ -327,16 +341,19 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  double _calculateDistance(double lat1, double lon1, double lat2, double lon2) {
+  double _calculateDistance(
+      double lat1, double lon1, double lat2, double lon2) {
     const double earthRadiusKm = 6371;
-    
+
     final double dLat = _toRadians(lat2 - lat1);
     final double dLon = _toRadians(lon2 - lon1);
-    
+
     final double a = (math.sin(dLat / 2) * math.sin(dLat / 2)) +
-        (math.cos(_toRadians(lat1)) * math.cos(_toRadians(lat2)) *
-            math.sin(dLon / 2) * math.sin(dLon / 2));
-    
+        (math.cos(_toRadians(lat1)) *
+            math.cos(_toRadians(lat2)) *
+            math.sin(dLon / 2) *
+            math.sin(dLon / 2));
+
     final double c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
     return earthRadiusKm * c;
   }
@@ -345,10 +362,11 @@ class _HomeScreenState extends State<HomeScreen> {
     return degrees * (math.pi / 180);
   }
 
-  Future<List<Map<String, dynamic>>> _getFromOpenStreetMap(double lat, double lng) async {
+  Future<List<Map<String, dynamic>>> _getFromOpenStreetMap(
+      double lat, double lng) async {
     try {
       const double radius = 50000;
-      
+
       final String query = '''
         [out:json][timeout:25];
         (
@@ -359,21 +377,22 @@ class _HomeScreenState extends State<HomeScreen> {
       ''';
 
       final response = await http.get(
-        Uri.parse('https://overpass-api.de/api/interpreter?data=${Uri.encodeComponent(query)}'),
+        Uri.parse(
+            'https://overpass-api.de/api/interpreter?data=${Uri.encodeComponent(query)}'),
       );
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         final elements = data['elements'] as List;
-        
+
         final List<Map<String, dynamic>> islamicPlaces = [];
-        
+
         for (final element in elements) {
           final tags = element['tags'] ?? {};
           final name = tags['name']?.toString().trim();
-          
+
           if (name == null || name.isEmpty) continue;
-          
+
           final bool isIslamic = _isIslamicPlace(tags, name);
 
           if (isIslamic) {
@@ -381,7 +400,7 @@ class _HomeScreenState extends State<HomeScreen> {
             islamicPlaces.add(masjid);
           }
         }
-        
+
         return islamicPlaces;
       }
       return [];
@@ -393,15 +412,15 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isIslamicPlace(Map<String, dynamic> tags, String name) {
     final religion = tags['religion']?.toString().toLowerCase() ?? '';
     final nameLower = name.toLowerCase();
-    
+
     return religion == 'muslim' ||
-           nameLower.contains('masjid') ||
-           nameLower.contains('mosque') ||
-           nameLower.contains('islamic') ||
-           nameLower.contains('islam') ||
-           nameLower.contains('muslim') ||
-           nameLower.contains('مسجد') ||
-           nameLower.contains('جامع');
+        nameLower.contains('masjid') ||
+        nameLower.contains('mosque') ||
+        nameLower.contains('islamic') ||
+        nameLower.contains('islam') ||
+        nameLower.contains('muslim') ||
+        nameLower.contains('مسجد') ||
+        nameLower.contains('جامع');
   }
 
   Map<String, dynamic> _createMasjidFromElement(Map<String, dynamic> element) {
@@ -435,21 +454,24 @@ class _HomeScreenState extends State<HomeScreen> {
     final city = tags['addr:city'];
     final postcode = tags['addr:postcode'];
     final housenumber = tags['addr:housenumber'];
-    
+
     if (street != null && city != null) {
       return '${housenumber ?? ''} $street, $city ${postcode ?? ''}'.trim();
     }
-    
+
     final fullAddress = tags['addr:full'] ?? tags['address'] ?? tags['addr'];
     if (fullAddress != null) return fullAddress.toString();
-    
+
     return 'Location available';
   }
 
   Map<String, dynamic> _generatePrayerTimes() {
     return {
       'fajr': {'adhan': '04:42', 'iqamah': '05:12'},
-      'shuruq': {'adhan': '06:15', 'iqamah': '--'}, // FIXED: 'shurug' to 'shuruq'
+      'shuruq': {
+        'adhan': '06:15',
+        'iqamah': '--'
+      }, // FIXED: 'shurug' to 'shuruq'
       'dhuhr': {'adhan': '12:59', 'iqamah': '13:09'},
       'asr': {'adhan': '16:43', 'iqamah': '16:58'},
       'maghrib': {'adhan': '19:44', 'iqamah': '19:54'},
@@ -550,40 +572,39 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ],
             ),
-            
             const SizedBox(height: 16),
-            
-            if (userLocation != null) 
+            if (userLocation != null)
               Padding(
                 padding: const EdgeInsets.only(bottom: 8.0),
                 child: Text(
                   userLocation!,
-                  style: const TextStyle(color: Color(0xFF2196F3), fontSize: 12),
+                  style:
+                      const TextStyle(color: Color(0xFF2196F3), fontSize: 12),
                 ),
               ),
-            
             if (searchStatus.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(bottom: 16.0),
                 child: Text(
                   searchStatus,
                   style: TextStyle(
-                    color: masjids.isEmpty ? Colors.orange : const Color(0xFF2196F3),
+                    color: masjids.isEmpty
+                        ? Colors.orange
+                        : const Color(0xFF2196F3),
                     fontSize: 12,
                   ),
                   textAlign: TextAlign.center,
                 ),
               ),
-            
             if (isLoading)
               const Column(
                 children: [
                   CircularProgressIndicator(),
                   SizedBox(height: 16),
-                  Text('Searching for masjids...', style: TextStyle(color: Colors.grey)),
+                  Text('Searching for masjids...',
+                      style: TextStyle(color: Colors.grey)),
                 ],
               ),
-            
             if (masjids.isEmpty && !isLoading && !isSearching)
               Expanded(
                 child: Center(
@@ -594,7 +615,10 @@ class _HomeScreenState extends State<HomeScreen> {
                       const SizedBox(height: 16),
                       const Text(
                         'Find Masjids',
-                        style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.black87),
+                        style: TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.black87),
                       ),
                       const SizedBox(height: 8),
                       const Text(
@@ -606,14 +630,15 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
               ),
-            
             if (masjids.isNotEmpty)
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      isSearching ? 'Search Results (${masjids.length})' : 'Nearby Masjids (${masjids.length})',
+                      isSearching
+                          ? 'Search Results (${masjids.length})'
+                          : 'Nearby Masjids (${masjids.length})',
                       style: const TextStyle(
                         fontSize: 18,
                         fontWeight: FontWeight.bold,
@@ -665,10 +690,9 @@ class MasjidCard extends StatelessWidget {
                     Text(
                       masjid['name'],
                       style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.black87
-                      ),
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.black87),
                     ),
                     const SizedBox(height: 4),
                     Text(
@@ -678,7 +702,8 @@ class MasjidCard extends StatelessWidget {
                     const SizedBox(height: 4),
                     Text(
                       '${masjid['events']?.length ?? 0} events • ${masjid['announcements']?.length ?? 0} announcements',
-                      style: const TextStyle(color: Color(0xFF2196F3), fontSize: 12),
+                      style: const TextStyle(
+                          color: Color(0xFF2196F3), fontSize: 12),
                     ),
                   ],
                 ),
@@ -724,7 +749,9 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
 
   Future<void> _openMaps() async {
     final dynamic lat = widget.masjid['latitude'] ?? widget.masjid['lat'];
-    final dynamic lon = widget.masjid['longitude'] ?? widget.masjid['lng'] ?? widget.masjid['lon'];
+    final dynamic lon = widget.masjid['longitude'] ??
+        widget.masjid['lng'] ??
+        widget.masjid['lon'];
 
     if (lat == null || lon == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -734,7 +761,8 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
     }
 
     final dest = '$lat,$lon';
-    final googleMapsUrl = 'https://www.google.com/maps/dir/?api=1&destination=$dest';
+    final googleMapsUrl =
+        'https://www.google.com/maps/dir/?api=1&destination=$dest';
     final googleMapsUri = Uri.parse(googleMapsUrl);
 
     try {
@@ -759,23 +787,39 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
 
   void _updateCurrentDateTime() {
     final now = DateTime.now();
-    
+
     const List<String> weekdays = [
-      'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'
+      'Monday',
+      'Tuesday',
+      'Wednesday',
+      'Thursday',
+      'Friday',
+      'Saturday',
+      'Sunday'
     ];
     const List<String> months = [
-      'January', 'February', 'March', 'April', 'May', 'June',
-      'July', 'August', 'September', 'October', 'November', 'December'
+      'January',
+      'February',
+      'March',
+      'April',
+      'May',
+      'June',
+      'July',
+      'August',
+      'September',
+      'October',
+      'November',
+      'December'
     ];
     final weekdayStr = weekdays[now.weekday - 1];
     final monthStr = months[now.month - 1];
     currentDate = '$weekdayStr, $monthStr ${now.day}, ${now.year}';
-    
+
     String two(int n) => n.toString().padLeft(2, '0');
     currentTime = '${two(now.hour)}:${two(now.minute)}:${two(now.second)}';
-    
+
     hijriDate = _getHijriDate(now);
-    
+
     setState(() {});
   }
 
@@ -784,48 +828,60 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
     const int referenceHijriDay = 9;
     const int referenceHijriMonth = 5;
     const int referenceHijriYear = 1447;
-    
+
     final int daysDifference = gregorianDate.difference(referenceDate).inDays;
-    
+
     int hijriDay = referenceHijriDay + daysDifference;
     int hijriMonth = referenceHijriMonth;
     int hijriYear = referenceHijriYear;
-    
+
     final Map<int, List<int>> hijriYearLengths = {
       1446: [30, 29, 30, 29, 30, 29, 30, 29, 30, 29, 30, 29],
       1447: [30, 29, 30, 29, 30, 29, 30, 29, 30, 29, 30, 29],
       1448: [30, 29, 30, 29, 30, 29, 30, 29, 30, 29, 30, 30],
     };
-    
-    List<int> currentYearLengths = hijriYearLengths[hijriYear] ?? [30, 29, 30, 29, 30, 29, 30, 29, 30, 29, 30, 29];
-    
+
+    List<int> currentYearLengths = hijriYearLengths[hijriYear] ??
+        [30, 29, 30, 29, 30, 29, 30, 29, 30, 29, 30, 29];
+
     while (hijriDay > currentYearLengths[hijriMonth - 1]) {
       hijriDay -= currentYearLengths[hijriMonth - 1];
       hijriMonth++;
-      
+
       if (hijriMonth > 12) {
         hijriMonth = 1;
         hijriYear++;
-        currentYearLengths = hijriYearLengths[hijriYear] ?? [30, 29, 30, 29, 30, 29, 30, 29, 30, 29, 30, 29];
+        currentYearLengths = hijriYearLengths[hijriYear] ??
+            [30, 29, 30, 29, 30, 29, 30, 29, 30, 29, 30, 29];
       }
     }
-    
+
     while (hijriDay < 1) {
       hijriMonth--;
       if (hijriMonth < 1) {
         hijriMonth = 12;
         hijriYear--;
-        currentYearLengths = hijriYearLengths[hijriYear] ?? [30, 29, 30, 29, 30, 29, 30, 29, 30, 29, 30, 29];
+        currentYearLengths = hijriYearLengths[hijriYear] ??
+            [30, 29, 30, 29, 30, 29, 30, 29, 30, 29, 30, 29];
       }
       hijriDay += currentYearLengths[hijriMonth - 1];
     }
-    
+
     final List<String> hijriMonths = [
-      'Muharram', 'Safar', 'Rabi al-Awwal', 'Rabi al-Thani', 
-      'Jumada al-Ula', 'Jumada al-Thani', 'Rajab', 'Sha\'ban', 
-      'Ramadan', 'Shawwal', 'Dhu al-Qi\'dah', 'Dhu al-Hijjah'
+      'Muharram',
+      'Safar',
+      'Rabi al-Awwal',
+      'Rabi al-Thani',
+      'Jumada al-Ula',
+      'Jumada al-Thani',
+      'Rajab',
+      'Sha\'ban',
+      'Ramadan',
+      'Shawwal',
+      'Dhu al-Qi\'dah',
+      'Dhu al-Hijjah'
     ];
-    
+
     return '$hijriDay ${hijriMonths[hijriMonth - 1]} $hijriYear AH';
   }
 
@@ -852,14 +908,17 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
 
     prayerTimes.forEach((prayer, times) {
       try {
-        final String adhanStr = (times is Map && times['adhan'] != null) ? times['adhan'].toString() : '--';
+        final String adhanStr = (times is Map && times['adhan'] != null)
+            ? times['adhan'].toString()
+            : '--';
         if (adhanStr != '--') {
           final timeParts = adhanStr.split(':');
           if (timeParts.length == 2) {
             final hour = int.tryParse(timeParts[0]);
             final minute = int.tryParse(timeParts[1]);
             if (hour != null && minute != null) {
-              DateTime prayerTime = DateTime(now.year, now.month, now.day, hour, minute);
+              DateTime prayerTime =
+                  DateTime(now.year, now.month, now.day, hour, minute);
               if (prayerTime.isBefore(now)) {
                 prayerTime = prayerTime.add(const Duration(days: 1));
               }
@@ -871,17 +930,17 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
         // ignore parsing errors
       }
     });
-    
+
     DateTime? nextPrayerTime;
     String nextPrayerName = 'Fajr';
-    
+
     prayerTimeMap.forEach((prayer, time) {
       if (nextPrayerTime == null || time.isBefore(nextPrayerTime!)) {
         nextPrayerTime = time;
         nextPrayerName = prayer;
       }
     });
-    
+
     if (nextPrayerTime != null) {
       final difference = nextPrayerTime!.difference(now);
       currentPrayerName = _capitalizeFirstLetter(nextPrayerName);
@@ -901,7 +960,7 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
     if (duration.isNegative) {
       return '00:00:00';
     }
-    
+
     String twoDigits(int n) => n.toString().padLeft(2, "0");
     String twoDigitHours = twoDigits(duration.inHours.remainder(24));
     String twoDigitMinutes = twoDigits(duration.inMinutes.remainder(60));
@@ -912,7 +971,8 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
   @override
   Widget build(BuildContext context) {
     final String name = widget.masjid['name']?.toString() ?? 'Masjid';
-    final String address = widget.masjid['address']?.toString() ?? 'Location available';
+    final String address =
+        widget.masjid['address']?.toString() ?? 'Location available';
     final String phone = widget.masjid['phone']?.toString() ?? 'Not available';
     final String email = widget.masjid['email']?.toString() ?? 'Not available';
 
@@ -921,7 +981,7 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
         ? Map<String, dynamic>.from(rawPrayerTimes)
         : <String, dynamic>{
             'fajr': {'adhan': '--', 'iqamah': '--'},
-            'shuruq': {'adhan': '--', 'iqamah': '--'}, 
+            'shuruq': {'adhan': '--', 'iqamah': '--'},
             'dhuhr': {'adhan': '--', 'iqamah': '--'},
             'asr': {'adhan': '--', 'iqamah': '--'},
             'maghrib': {'adhan': '--', 'iqamah': '--'},
@@ -929,10 +989,13 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
           };
 
     final dynamic rawEvents = widget.masjid['events'];
-    final List<dynamic> events = (rawEvents is List) ? List<dynamic>.from(rawEvents) : <dynamic>[];
+    final List<dynamic> events =
+        (rawEvents is List) ? List<dynamic>.from(rawEvents) : <dynamic>[];
 
     final dynamic rawAnnouncements = widget.masjid['announcements'];
-    final List<dynamic> announcements = (rawAnnouncements is List) ? List<dynamic>.from(rawAnnouncements) : <dynamic>[];
+    final List<dynamic> announcements = (rawAnnouncements is List)
+        ? List<dynamic>.from(rawAnnouncements)
+        : <dynamic>[];
 
     return Scaffold(
       appBar: AppBar(
@@ -941,7 +1004,8 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
         foregroundColor: Colors.white,
       ),
       backgroundColor: const Color(0xFFF5F5F5),
-      body: SafeArea( // ADDED: SafeArea to prevent layout issues
+      body: SafeArea(
+        // ADDED: SafeArea to prevent layout issues
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(16.0),
           child: Column(
@@ -1005,9 +1069,7 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
                   ),
                 ),
               ),
-
               const SizedBox(height: 24),
-
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(16.0),
@@ -1032,7 +1094,8 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
                               children: [
                                 Text(
                                   address,
-                                  style: const TextStyle(color: Colors.grey, fontSize: 16),
+                                  style: const TextStyle(
+                                      color: Colors.grey, fontSize: 16),
                                 ),
                                 if (phone != 'Not available') ...[
                                   const SizedBox(height: 8),
@@ -1066,9 +1129,7 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
                   ),
                 ),
               ),
-
               const SizedBox(height: 24),
-
               const Text(
                 'Prayer Times',
                 style: TextStyle(
@@ -1123,30 +1184,40 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
                           ],
                         ),
                       ),
-                      _buildPrayerRow('Fajr', prayerTimes['fajr'], currentPrayerName),
+                      _buildPrayerRow(
+                          'Fajr', prayerTimes['fajr'], currentPrayerName),
                       _buildDivider(),
-                      _buildPrayerRow('Shuruq', prayerTimes['shuruq'], currentPrayerName), // FIXED: 'shurug' to 'shuruq'
+                      _buildPrayerRow('Shuruq', prayerTimes['shuruq'],
+                          currentPrayerName), // FIXED: 'shurug' to 'shuruq'
                       _buildDivider(),
-                      _buildPrayerRow('Dhuhr', prayerTimes['dhuhr'], currentPrayerName),
+                      _buildPrayerRow(
+                        DateTime.now().weekday == DateTime.friday
+                            ? 'Jummah'
+                            : 'Dhuhr',
+                        prayerTimes['dhuhr'],
+                        currentPrayerName,
+                      ),
                       _buildDivider(),
-                      _buildPrayerRow('Asr', prayerTimes['asr'], currentPrayerName),
+                      _buildPrayerRow(
+                          'Asr', prayerTimes['asr'], currentPrayerName),
                       _buildDivider(),
-                      _buildPrayerRow('Maghrib', prayerTimes['maghrib'], currentPrayerName),
+                      _buildPrayerRow(
+                          'Maghrib', prayerTimes['maghrib'], currentPrayerName),
                       _buildDivider(),
-                      _buildPrayerRow('Isha', prayerTimes['isha'], currentPrayerName),
+                      _buildPrayerRow(
+                          'Isha', prayerTimes['isha'], currentPrayerName),
                     ],
                   ),
                 ),
               ),
-
               const SizedBox(height: 24),
-
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(16.0),
                   child: Row(
                     children: [
-                      const Icon(Icons.calendar_today, color: Color(0xFF2196F3)),
+                      const Icon(Icons.calendar_today,
+                          color: Color(0xFF2196F3)),
                       const SizedBox(width: 12),
                       const Expanded(
                         child: Text(
@@ -1159,7 +1230,8 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
                         ),
                       ),
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 6),
                         decoration: BoxDecoration(
                           color: const Color(0xFF2196F3),
                           borderRadius: BorderRadius.circular(8),
@@ -1176,9 +1248,7 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
                   ),
                 ),
               ),
-
               const SizedBox(height: 24),
-
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
@@ -1197,7 +1267,6 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
                 ],
               ),
               const SizedBox(height: 12),
-
               if (events.isEmpty)
                 const Card(
                   child: Padding(
@@ -1211,11 +1280,10 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
                 )
               else
                 Column(
-                  children: events.map((event) => _buildEventCard(event)).toList(),
+                  children:
+                      events.map((event) => _buildEventCard(event)).toList(),
                 ),
-
               const SizedBox(height: 24),
-
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
@@ -1234,7 +1302,6 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
                 ],
               ),
               const SizedBox(height: 12),
-
               if (announcements.isEmpty)
                 const Card(
                   child: Padding(
@@ -1248,11 +1315,12 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
                 )
               else
                 Column(
-                  children: announcements.map((announcement) => _buildAnnouncementCard(announcement)).toList(),
+                  children: announcements
+                      .map((announcement) =>
+                          _buildAnnouncementCard(announcement))
+                      .toList(),
                 ),
-
               const SizedBox(height: 12),
-
               ElevatedButton(
                 onPressed: () {
                   ScaffoldMessenger.of(context).showSnackBar(
@@ -1267,7 +1335,6 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
                 ),
                 child: const Text('Follow Masjid'),
               ),
-
               const SizedBox(height: 20),
             ],
           ),
@@ -1279,8 +1346,12 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
   Widget _buildPrayerRow(String prayer, dynamic times, String currentPrayer) {
     final isNextPrayer = prayer.toLowerCase() == currentPrayer.toLowerCase();
 
-    final String adhanStr = (times is Map && times['adhan'] != null) ? times['adhan'].toString() : '--';
-    final String iqamahStr = (times is Map && times['iqamah'] != null) ? times['iqamah'].toString() : '--';
+    final String adhanStr = (times is Map && times['adhan'] != null)
+        ? times['adhan'].toString()
+        : '--';
+    final String iqamahStr = (times is Map && times['iqamah'] != null)
+        ? times['iqamah'].toString()
+        : '--';
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 12),
@@ -1291,14 +1362,16 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
             child: Row(
               children: [
                 if (isNextPrayer)
-                  const Icon(Icons.notifications_active, color: Color(0xFF2196F3), size: 16),
+                  const Icon(Icons.notifications_active,
+                      color: Color(0xFF2196F3), size: 16),
                 if (isNextPrayer) const SizedBox(width: 4),
                 Text(
                   prayer,
                   style: TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.w500,
-                    color: isNextPrayer ? const Color(0xFF2196F3) : Colors.black87,
+                    color:
+                        isNextPrayer ? const Color(0xFF2196F3) : Colors.black87,
                   ),
                 ),
               ],
@@ -1319,7 +1392,9 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
             child: Text(
               iqamahStr,
               style: TextStyle(
-                color: isNextPrayer ? const Color(0xFF2196F3) : const Color(0xFF2196F3),
+                color: isNextPrayer
+                    ? const Color(0xFF2196F3)
+                    : const Color(0xFF2196F3),
                 fontSize: 16,
                 fontWeight: isNextPrayer ? FontWeight.bold : FontWeight.normal,
               ),
@@ -1370,18 +1445,22 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
             const SizedBox(height: 8),
             Row(
               children: [
-                const Icon(Icons.calendar_today, size: 16, color: Color(0xFF2196F3)),
+                const Icon(Icons.calendar_today,
+                    size: 16, color: Color(0xFF2196F3)),
                 const SizedBox(width: 4),
                 Text(
                   event['date'],
-                  style: const TextStyle(fontSize: 14, color: Color(0xFF2196F3)),
+                  style:
+                      const TextStyle(fontSize: 14, color: Color(0xFF2196F3)),
                 ),
                 const SizedBox(width: 16),
-                const Icon(Icons.access_time, size: 16, color: Color(0xFF2196F3)),
+                const Icon(Icons.access_time,
+                    size: 16, color: Color(0xFF2196F3)),
                 const SizedBox(width: 4),
                 Text(
                   event['time'],
-                  style: const TextStyle(fontSize: 14, color: Color(0xFF2196F3)),
+                  style:
+                      const TextStyle(fontSize: 14, color: Color(0xFF2196F3)),
                 ),
               ],
             ),
@@ -1393,7 +1472,7 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
 
   Widget _buildAnnouncementCard(Map<String, dynamic> announcement) {
     final isImportant = announcement['important'] == true;
-    
+
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
       color: isImportant ? const Color(0xFFFFEBEE) : null,
@@ -1413,7 +1492,9 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
                     style: TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.bold,
-                      color: isImportant ? const Color(0xFFF44336) : Colors.black87,
+                      color: isImportant
+                          ? const Color(0xFFF44336)
+                          : Colors.black87,
                     ),
                   ),
                 ),
@@ -1429,15 +1510,19 @@ class _MasjidDetailScreenState extends State<MasjidDetailScreen> {
             const SizedBox(height: 8),
             Row(
               children: [
-                Icon(Icons.calendar_today, 
-                    size: 14, 
-                    color: isImportant ? const Color(0xFFF44336) : const Color(0xFF2196F3)),
+                Icon(Icons.calendar_today,
+                    size: 14,
+                    color: isImportant
+                        ? const Color(0xFFF44336)
+                        : const Color(0xFF2196F3)),
                 const SizedBox(width: 4),
                 Text(
                   announcement['date'],
                   style: TextStyle(
                     fontSize: 12,
-                    color: isImportant ? const Color(0xFFF44336) : const Color(0xFF2196F3),
+                    color: isImportant
+                        ? const Color(0xFFF44336)
+                        : const Color(0xFF2196F3),
                   ),
                 ),
               ],

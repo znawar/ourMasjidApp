@@ -22,18 +22,25 @@ class DashboardHome extends StatefulWidget {
 
 class _DashboardHomeState extends State<DashboardHome> {
   Timer? _timer;
-  DateTime _currentTime = DateTime.now();
+  DateTime _currentTime = DateTime.now(); // Will be updated from provider in initState
   int _connectedTvCount = 0;
   StreamSubscription<QuerySnapshot>? _tvSubscription;
 
   @override
   void initState() {
     super.initState();
+    // Initialize time from provider immediately
+    try {
+      final provider = Provider.of<PrayerTimesProvider>(context, listen: false);
+      _currentTime = provider.masjidNow;
+    } catch (_) {}
+    
     // Update time every second for real-time clock
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (mounted) {
+        final provider = Provider.of<PrayerTimesProvider>(context, listen: false);
         setState(() {
-          _currentTime = DateTime.now();
+          _currentTime = provider.masjidNow;
         });
       }
     });
@@ -43,7 +50,7 @@ class _DashboardHomeState extends State<DashboardHome> {
   void _listenToConnectedTvs() {
     final auth = Provider.of<AuthProvider>(context, listen: false);
     if (auth.userId == null) return;
-    
+
     try {
       _tvSubscription = FirebaseFirestore.instance
           .collection('tv_pairs')
@@ -86,19 +93,19 @@ class _DashboardHomeState extends State<DashboardHome> {
                 // TV Preview Header - Made smaller
                 _buildTVPreviewHeader(auth),
                 const SizedBox(height: 16),
-                
+
                 // Upcoming Prayer - More compact
                 _buildUpcomingPrayerSection(prayerTimes),
                 const SizedBox(height: 16),
-                
+
                 // Live TV Display Preview - Smaller
                 _buildLiveTVPreview(prayerTimes, announcements),
                 const SizedBox(height: 16),
-                
+
                 // Announcements Grid - More compact
                 _buildAnnouncementsGrid(announcements),
                 const SizedBox(height: 16),
-                
+
                 // System Status Panel - Smaller
                 _buildSystemStatus(prayerTimes, announcements),
               ],
@@ -158,8 +165,8 @@ class _DashboardHomeState extends State<DashboardHome> {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  _connectedTvCount > 0 
-                      ? '$_connectedTvCount TV${_connectedTvCount > 1 ? 's' : ''} connected' 
+                  _connectedTvCount > 0
+                      ? '$_connectedTvCount TV${_connectedTvCount > 1 ? 's' : ''} connected'
                       : 'No TVs connected',
                   style: TextStyle(
                     color: Colors.white.withOpacity(0.9),
@@ -172,12 +179,12 @@ class _DashboardHomeState extends State<DashboardHome> {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
             decoration: BoxDecoration(
-              color: _connectedTvCount > 0 
+              color: _connectedTvCount > 0
                   ? const Color(0xFF4CAF50).withOpacity(0.2)
                   : Colors.orange.withOpacity(0.2),
               borderRadius: BorderRadius.circular(8),
               border: Border.all(
-                color: _connectedTvCount > 0 
+                color: _connectedTvCount > 0
                     ? const Color(0xFF4CAF50)
                     : Colors.orange,
                 width: 1,
@@ -189,7 +196,7 @@ class _DashboardHomeState extends State<DashboardHome> {
                 Icon(
                   Icons.circle,
                   size: 6,
-                  color: _connectedTvCount > 0 
+                  color: _connectedTvCount > 0
                       ? const Color(0xFF4CAF50)
                       : Colors.orange,
                 ),
@@ -293,7 +300,7 @@ class _DashboardHomeState extends State<DashboardHome> {
                 ),
               ),
               const SizedBox(width: 12),
-              
+
               // Next Prayer Countdown - More compact
               Expanded(
                 child: Container(
@@ -341,11 +348,13 @@ class _DashboardHomeState extends State<DashboardHome> {
                       ),
                       const SizedBox(height: 6),
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 4),
                         decoration: BoxDecoration(
                           color: Colors.white.withOpacity(0.1),
                           borderRadius: BorderRadius.circular(6),
-                          border: Border.all(color: Colors.white.withOpacity(0.2)),
+                          border:
+                              Border.all(color: Colors.white.withOpacity(0.2)),
                         ),
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -381,14 +390,17 @@ class _DashboardHomeState extends State<DashboardHome> {
     );
   }
 
-  Widget _buildLiveTVPreview(PrayerTimesProvider prayerTimes, AnnouncementsProvider announcements) {
+  Widget _buildLiveTVPreview(
+      PrayerTimesProvider prayerTimes, AnnouncementsProvider announcements) {
     final nextPrayer = _getNextPrayer(prayerTimes);
-    final prayerTimesMap = nextPrayer['prayerTimes'] as Map<String, String>? ?? {};
+    final prayerTimesMap =
+        nextPrayer['prayerTimes'] as Map<String, String>? ?? {};
     final currentPrayer = nextPrayer['currentPrayer'] as String?;
     final auth = Provider.of<AuthProvider>(context, listen: false);
     final timeStr = DateFormat('h:mm a').format(_currentTime);
-    final activeAnnouncements = announcements.announcements.where((a) => a.active).toList();
-    
+    final activeAnnouncements =
+        announcements.announcements.where((a) => a.active).toList();
+
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
@@ -423,7 +435,7 @@ class _DashboardHomeState extends State<DashboardHome> {
               Container(
                 padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 decoration: BoxDecoration(
-                  color: _connectedTvCount > 0 
+                  color: _connectedTvCount > 0
                       ? Color(0xFF4CAF50).withOpacity(0.1)
                       : Colors.grey.withOpacity(0.1),
                   borderRadius: BorderRadius.circular(6),
@@ -431,9 +443,8 @@ class _DashboardHomeState extends State<DashboardHome> {
                 child: Text(
                   _connectedTvCount > 0 ? 'LIVE' : 'OFFLINE',
                   style: TextStyle(
-                    color: _connectedTvCount > 0 
-                        ? Color(0xFF4CAF50)
-                        : Colors.grey,
+                    color:
+                        _connectedTvCount > 0 ? Color(0xFF4CAF50) : Colors.grey,
                     fontSize: 10,
                     fontWeight: FontWeight.w600,
                   ),
@@ -442,7 +453,7 @@ class _DashboardHomeState extends State<DashboardHome> {
             ],
           ),
           SizedBox(height: 12),
-          
+
           // TV Screen Mockup - Much smaller
           Container(
             height: 150,
@@ -485,8 +496,8 @@ class _DashboardHomeState extends State<DashboardHome> {
                               SizedBox(width: 4),
                               Expanded(
                                 child: Text(
-                                  auth.masjidName.isNotEmpty 
-                                      ? auth.masjidName 
+                                  auth.masjidName.isNotEmpty
+                                      ? auth.masjidName
                                       : 'YOUR MASJID',
                                   style: TextStyle(
                                     color: Colors.white,
@@ -498,7 +509,8 @@ class _DashboardHomeState extends State<DashboardHome> {
                                 ),
                               ),
                               Container(
-                                padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                padding: EdgeInsets.symmetric(
+                                    horizontal: 4, vertical: 2),
                                 decoration: BoxDecoration(
                                   color: Colors.white.withOpacity(0.2),
                                   borderRadius: BorderRadius.circular(4),
@@ -516,7 +528,7 @@ class _DashboardHomeState extends State<DashboardHome> {
                             ],
                           ),
                         ),
-                        
+
                         // TV Screen Content Area
                         Expanded(
                           child: Row(
@@ -529,7 +541,8 @@ class _DashboardHomeState extends State<DashboardHome> {
                                   child: Center(
                                     child: activeAnnouncements.isNotEmpty
                                         ? Column(
-                                            mainAxisAlignment: MainAxisAlignment.center,
+                                            mainAxisAlignment:
+                                                MainAxisAlignment.center,
                                             children: [
                                               Icon(
                                                 Icons.slideshow,
@@ -555,7 +568,8 @@ class _DashboardHomeState extends State<DashboardHome> {
                                             ],
                                           )
                                         : Column(
-                                            mainAxisAlignment: MainAxisAlignment.center,
+                                            mainAxisAlignment:
+                                                MainAxisAlignment.center,
                                             children: [
                                               Icon(
                                                 Icons.image_outlined,
@@ -575,7 +589,7 @@ class _DashboardHomeState extends State<DashboardHome> {
                                   ),
                                 ),
                               ),
-                              
+
                               // Prayer Times Sidebar
                               Container(
                                 width: 90,
@@ -617,38 +631,53 @@ class _DashboardHomeState extends State<DashboardHome> {
                                       Container(
                                         height: 1,
                                         color: Colors.grey.shade200,
-                                        margin: EdgeInsets.symmetric(horizontal: 4),
+                                        margin:
+                                            EdgeInsets.symmetric(horizontal: 4),
                                       ),
                                       SizedBox(height: 4),
                                       // Prayer times list
-                                      ...['Fajr', 'Dhuhr', 'Asr', 'Maghrib', 'Isha'].map((prayer) {
+                                      ...[
+                                        'Fajr',
+                                        'Dhuhr',
+                                        'Asr',
+                                        'Maghrib',
+                                        'Isha'
+                                      ].map((prayer) {
                                         final isNext = prayer == currentPrayer;
+                                        final isFriday = _currentTime.weekday == DateTime.friday;
+                                        final displayName =
+                                            (isFriday && prayer == 'Dhuhr')
+                                                ? 'Jummah'
+                                                : prayer;
                                         return Padding(
-                                          padding: EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                                          padding: EdgeInsets.symmetric(
+                                              horizontal: 4, vertical: 1),
                                           child: Row(
-                                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                            mainAxisAlignment:
+                                                MainAxisAlignment.spaceBetween,
                                             children: [
                                               Text(
-                                                prayer,
+                                                displayName,
                                                 style: TextStyle(
-                                                  color: isNext 
-                                                      ? Color(0xFF1976D2) 
+                                                  color: isNext
+                                                      ? Color(0xFF1976D2)
                                                       : Colors.grey.shade700,
                                                   fontSize: 7,
-                                                  fontWeight: isNext 
-                                                      ? FontWeight.w700 
+                                                  fontWeight: isNext
+                                                      ? FontWeight.w700
                                                       : FontWeight.w500,
                                                 ),
                                               ),
                                               Text(
-                                                prayerTimesMap[prayer] ?? '--:--',
+                                                prayerTimesMap[prayer] ??
+                                                    '--:--',
                                                 style: TextStyle(
-                                                  color: isNext 
-                                                      ? Color(0xFF1976D2) 
+                                                  color: isNext
+                                                      ? Color(0xFF1976D2)
                                                       : Colors.grey.shade600,
                                                   fontSize: 7,
-                                                  fontWeight: isNext 
-                                                      ? FontWeight.w700 
+                                                  fontWeight: isNext
+                                                      ? FontWeight.w700
                                                       : FontWeight.w500,
                                                   fontFamily: 'RobotoMono',
                                                 ),
@@ -671,7 +700,7 @@ class _DashboardHomeState extends State<DashboardHome> {
               ],
             ),
           ),
-          
+
           SizedBox(height: 16),
           // TV Controls - Smaller buttons
           Wrap(
@@ -728,8 +757,9 @@ class _DashboardHomeState extends State<DashboardHome> {
   }
 
   Widget _buildAnnouncementsGrid(AnnouncementsProvider announcements) {
-    final activeAnnouncements = announcements.announcements.where((a) => a.active).toList();
-    
+    final activeAnnouncements =
+        announcements.announcements.where((a) => a.active).toList();
+
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
@@ -777,7 +807,6 @@ class _DashboardHomeState extends State<DashboardHome> {
             ],
           ),
           SizedBox(height: 12),
-          
           if (announcements.announcements.isEmpty)
             Container(
               padding: EdgeInsets.symmetric(vertical: 40),
@@ -816,13 +845,15 @@ class _DashboardHomeState extends State<DashboardHome> {
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Color(0xFF1976D2),
                       foregroundColor: Colors.white,
-                      padding: EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                      padding:
+                          EdgeInsets.symmetric(horizontal: 20, vertical: 10),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(6),
                       ),
                     ),
                     icon: Icon(Icons.add, size: 16),
-                    label: Text('Create Announcement', style: TextStyle(fontSize: 12)),
+                    label: Text('Create Announcement',
+                        style: TextStyle(fontSize: 12)),
                   ),
                 ],
               ),
@@ -831,7 +862,8 @@ class _DashboardHomeState extends State<DashboardHome> {
             SingleChildScrollView(
               scrollDirection: Axis.horizontal,
               child: Row(
-                children: announcements.announcements.take(4).map((announcement) {
+                children:
+                    announcements.announcements.take(4).map((announcement) {
                   return Container(
                     width: 200,
                     margin: EdgeInsets.only(right: 12),
@@ -881,7 +913,7 @@ class _DashboardHomeState extends State<DashboardHome> {
                             ),
                           ),
                         ),
-                        
+
                         // Content
                         Container(
                           padding: EdgeInsets.all(12),
@@ -939,11 +971,13 @@ class _DashboardHomeState extends State<DashboardHome> {
     );
   }
 
-  Widget _buildSystemStatus(PrayerTimesProvider prayerTimes, AnnouncementsProvider announcements) {
+  Widget _buildSystemStatus(
+      PrayerTimesProvider prayerTimes, AnnouncementsProvider announcements) {
     final hasPrayerTimes = prayerTimes.prayerSettings != null;
-    final activeAnnouncements = announcements.announcements.where((a) => a.active).length;
+    final activeAnnouncements =
+        announcements.announcements.where((a) => a.active).length;
     final totalAnnouncements = announcements.announcements.length;
-    
+
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
@@ -976,7 +1010,6 @@ class _DashboardHomeState extends State<DashboardHome> {
             ],
           ),
           SizedBox(height: 12),
-          
           Row(
             children: [
               // Status Indicators - More compact
@@ -1000,14 +1033,16 @@ class _DashboardHomeState extends State<DashboardHome> {
                     _buildStatusItem(
                       'Announcements',
                       Icons.announcement,
-                      activeAnnouncements > 0 ? Color(0xFF4CAF50) : Colors.orange,
+                      activeAnnouncements > 0
+                          ? Color(0xFF4CAF50)
+                          : Colors.orange,
                       '$activeAnnouncements Active',
                     ),
                   ],
                 ),
               ),
               SizedBox(width: 12),
-              
+
               // Quick Stats - More compact
               Expanded(
                 child: Container(
@@ -1030,20 +1065,22 @@ class _DashboardHomeState extends State<DashboardHome> {
                       SizedBox(height: 12),
                       Row(
                         children: [
-                          _buildQuickStatItem('TVs', '$_connectedTvCount', Icons.tv),
+                          _buildQuickStatItem(
+                              'TVs', '$_connectedTvCount', Icons.tv),
                           SizedBox(width: 8),
-                          _buildQuickStatItem('Active', '$activeAnnouncements', Icons.slideshow),
+                          _buildQuickStatItem('Active', '$activeAnnouncements',
+                              Icons.slideshow),
                         ],
                       ),
                       SizedBox(height: 12),
                       Row(
                         children: [
                           Icon(
-                            hasPrayerTimes && _connectedTvCount > 0 
-                                ? Icons.check_circle 
+                            hasPrayerTimes && _connectedTvCount > 0
+                                ? Icons.check_circle
                                 : Icons.info_outline,
-                            color: hasPrayerTimes && _connectedTvCount > 0 
-                                ? Color(0xFF4CAF50) 
+                            color: hasPrayerTimes && _connectedTvCount > 0
+                                ? Color(0xFF4CAF50)
                                 : Colors.orange,
                             size: 16,
                           ),
@@ -1106,7 +1143,8 @@ class _DashboardHomeState extends State<DashboardHome> {
     );
   }
 
-  Widget _buildStatusItem(String title, IconData icon, Color color, String status) {
+  Widget _buildStatusItem(
+      String title, IconData icon, Color color, String status) {
     return Container(
       padding: EdgeInsets.all(10),
       decoration: BoxDecoration(
@@ -1171,7 +1209,7 @@ class _DashboardHomeState extends State<DashboardHome> {
 
     final now = _currentTime;
     final prayerOrder = ['Fajr', 'Dhuhr', 'Asr', 'Maghrib', 'Isha'];
-    
+
     // Build prayer times map for display
     final prayerTimesMap = <String, String>{};
     for (final name in prayerOrder) {
@@ -1216,12 +1254,22 @@ class _DashboardHomeState extends State<DashboardHome> {
       final hours = diff.inHours;
       final minutes = diff.inMinutes % 60;
       final seconds = diff.inSeconds % 60;
-      countdown = '${hours.toString().padLeft(2, '0')}:${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
+      countdown =
+          '${hours.toString().padLeft(2, '0')}:${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
+    }
+
+    // Get display name (Jummah on Friday for Dhuhr)
+    final isFriday = now.weekday == DateTime.friday;
+    String? displayName = nextPrayerName;
+    if (isFriday && nextPrayerName == 'Dhuhr') {
+      displayName = 'Jummah';
     }
 
     return {
-      'name': nextPrayerName?.toUpperCase() ?? 'N/A',
-      'time': nextPrayerTime != null ? DateFormat('h:mm a').format(nextPrayerTime) : '--:--',
+      'name': displayName?.toUpperCase() ?? 'N/A',
+      'time': nextPrayerTime != null
+          ? DateFormat('h:mm a').format(nextPrayerTime)
+          : '--:--',
       'countdown': countdown,
       'prayerTimes': prayerTimesMap,
       'currentPrayer': nextPrayerName,
@@ -1295,9 +1343,18 @@ class _DashboardHomeState extends State<DashboardHome> {
     }
 
     final List<String> hijriMonths = [
-      'Muharram', 'Safar', 'Rabi al-Awwal', 'Rabi al-Thani',
-      'Jumada al-Awwal', 'Jumada al-Thani', 'Rajab', 'Shaban',
-      'Ramadan', 'Shawwal', 'Dhul Qadah', 'Dhul Hijjah'
+      'Muharram',
+      'Safar',
+      'Rabi al-Awwal',
+      'Rabi al-Thani',
+      'Jumada al-Awwal',
+      'Jumada al-Thani',
+      'Rajab',
+      'Shaban',
+      'Ramadan',
+      'Shawwal',
+      'Dhul Qadah',
+      'Dhul Hijjah'
     ];
 
     return '$hijriDay ${hijriMonths[hijriMonth - 1]} $hijriYear AH';
@@ -1325,113 +1382,102 @@ class _AdminDashboardState extends State<AdminDashboard> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: Row(
-        children: [
-          // Sidebar
-          Container(
-            width: 320,
-            decoration: BoxDecoration(
-              color: AdminTheme.backgroundCard,
-              boxShadow: AdminTheme.shadowLight,
-            ),
-            child: Column(
-              children: [
-                // Logo/Header - More compact
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  child: Row(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(
-                          gradient: AdminTheme.primaryGradient,
-                          borderRadius: AdminTheme.borderRadiusSmall,
-                        ),
-                        child: const Icon(Icons.mosque, color: Colors.white, size: 20),
-                      ),
-                      const SizedBox(width: 8),
-                      const Expanded(
-                        child: Text(
-                          'Masjid App',
-                          style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                            color: AdminTheme.primaryBlue,
-                          ),
-                        ),
-                      ),
-                    ],
+    // Use ResponsiveScaffold so the sidebar becomes a Drawer on narrow screens
+    return ResponsiveScaffold(
+      sidebar: Container(
+        width: 320,
+        decoration: BoxDecoration(
+          color: AdminTheme.backgroundCard,
+          boxShadow: AdminTheme.shadowLight,
+        ),
+        child: Column(
+          children: [
+            // Logo/Header - More compact
+            Container(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      gradient: AdminTheme.primaryGradient,
+                      borderRadius: AdminTheme.borderRadiusSmall,
+                    ),
+                    child: const Icon(Icons.mosque, color: Colors.white, size: 20),
                   ),
-                ),
-                const Divider(height: 1),
-                // Menu Items - More compact
-                Expanded(
-                  child: ListView.builder(
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                    itemCount: _menuItems.length,
-                    itemBuilder: (context, index) {
-                      final item = _menuItems[index];
-                      final isSelected = _selectedIndex == index;
-                      return Container(
-                        margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: isSelected ? AdminTheme.primaryBlue.withOpacity(0.1) : null,
-                          borderRadius: AdminTheme.borderRadiusSmall,
-                        ),
-                        child: ListTile(
-                          dense: true,
-                          leading: Icon(
-                            item['icon'],
-                            color: isSelected ? AdminTheme.primaryBlue : AdminTheme.textMuted,
-                            size: 18,
-                          ),
-                          title: Text(
-                            item['label'],
-                            style: TextStyle(
-                              color: isSelected ? AdminTheme.primaryBlue : AdminTheme.textPrimary,
-                              fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
-                              fontSize: 13,
-                            ),
-                          ),
-                          onTap: () => setState(() => _selectedIndex = index),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: AdminTheme.borderRadiusSmall,
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                ),
-                // Logout - More compact
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  child: Consumer<AuthProvider>(
-                    builder: (context, auth, _) => ListTile(
-                      dense: true,
-                      leading: const Icon(Icons.logout, color: AdminTheme.accentRed, size: 18),
-                      title: const Text(
-                        'Logout',
-                        style: TextStyle(color: AdminTheme.accentRed, fontSize: 13, fontWeight: FontWeight.w500),
-                      ),
-                      onTap: () => auth.logout(),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: AdminTheme.borderRadiusSmall,
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      'Masjid App',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: AdminTheme.primaryBlue,
                       ),
                     ),
                   ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            // Menu Items - More compact
+            Expanded(
+              child: ListView.builder(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                itemCount: _menuItems.length,
+                itemBuilder: (context, index) {
+                  final item = _menuItems[index];
+                  final isSelected = _selectedIndex == index;
+                  return Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: isSelected ? AdminTheme.primaryBlue.withOpacity(0.1) : null,
+                      borderRadius: AdminTheme.borderRadiusSmall,
+                    ),
+                    child: ListTile(
+                      dense: true,
+                      leading: Icon(
+                        item['icon'],
+                        color: isSelected ? AdminTheme.primaryBlue : AdminTheme.textMuted,
+                        size: 18,
+                      ),
+                      title: Text(
+                        item['label'],
+                        style: TextStyle(
+                          color: isSelected ? AdminTheme.primaryBlue : AdminTheme.textPrimary,
+                          fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+                          fontSize: 13,
+                        ),
+                      ),
+                      onTap: () => setState(() => _selectedIndex = index),
+                      shape: RoundedRectangleBorder(borderRadius: AdminTheme.borderRadiusSmall),
+                    ),
+                  );
+                },
+              ),
+            ),
+            // Logout - More compact
+            Container(
+              padding: const EdgeInsets.all(12),
+              child: Consumer<AuthProvider>(
+                builder: (context, auth, _) => ListTile(
+                  dense: true,
+                  leading: const Icon(Icons.logout, color: AdminTheme.accentRed, size: 18),
+                  title: const Text(
+                    'Logout',
+                    style: TextStyle(color: AdminTheme.accentRed, fontSize: 13, fontWeight: FontWeight.w500),
+                  ),
+                  onTap: () => auth.logout(),
+                  shape: RoundedRectangleBorder(borderRadius: AdminTheme.borderRadiusSmall),
                 ),
-              ],
+              ),
             ),
-          ),
-          // Main Content
-          Expanded(
-            child: Container(
-              color: AdminTheme.backgroundSection,
-              child: _buildContent(),
-            ),
-          ),
-        ],
+          ],
+        ),
+      ),
+      body: Container(
+        color: AdminTheme.backgroundSection,
+        child: _buildContent(),
       ),
     );
   }
