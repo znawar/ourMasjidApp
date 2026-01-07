@@ -104,7 +104,31 @@ class TimezoneService {
 
   /// Maps common country names to IANA timezone IDs for fallback when no coordinates.
   static String? guessTimezoneFromCountry(String country) {
-    final c = country.trim().toLowerCase();
+    var c = country.trim().toLowerCase();
+
+    // Normalise common variants and abbreviations so that
+    // values like "Aus" or "Australia (AU)" still resolve
+    // to a valid timezone instead of falling back to the
+    // device's local clock.
+    if (c.isEmpty) {
+      return null;
+    }
+
+    // Handle Australia variants
+    if (c == 'aus' || c == 'au' || c.contains('australia')) {
+      c = 'australia';
+    }
+
+    // Handle United States variants
+    if (c == 'us' || c == 'u.s.' || c.contains('united states')) {
+      c = 'united states';
+    }
+
+    // Handle United Kingdom variants
+    if (c == 'gb' || c == 'uk' || c.contains('united kingdom')) {
+      c = 'united kingdom';
+    }
+
     const map = {
       'australia': 'Australia/Sydney',
       'usa': 'America/New_York',

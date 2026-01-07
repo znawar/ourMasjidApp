@@ -4,6 +4,11 @@ import '../providers/prayer_times_provider.dart';
 import 'package:admin_web/providers/announcements_provider.dart';
 import 'package:admin_web/utils/admin_theme.dart';
 
+/// Main admin page for creating and managing announcements.
+///
+/// This screen wires together [AnnouncementsProvider] and the
+/// platform-specific upload helpers. It is responsive so the same
+/// layout works on both desktop and mobile devices.
 class AnnouncementsScreen extends StatefulWidget {
   const AnnouncementsScreen({super.key});
 
@@ -25,6 +30,9 @@ class _AnnouncementsScreenState extends State<AnnouncementsScreen> {
     super.dispose();
   }
 
+  /// Validates the form and creates a new announcement via
+  /// [AnnouncementsProvider.addAnnouncement]. If [_isPermanent] is
+  /// false we compute an [expiresAt] timestamp so it will auto-expire.
   Future<void> _addAnnouncement(BuildContext context) async {
     if (_titleController.text.isEmpty) {
       if (!mounted) return;
@@ -82,6 +90,8 @@ class _AnnouncementsScreenState extends State<AnnouncementsScreen> {
     }
   }
 
+  /// Opens the dialog where the admin can enter title/description and
+  /// choose between a permanent or time-limited announcement.
   void _showAddDialog(BuildContext context) {
     // Reset to default values
     _isPermanent = true;
@@ -341,6 +351,8 @@ class _AnnouncementsScreenState extends State<AnnouncementsScreen> {
     );
   }
   
+  /// Returns a friendly string such as "Jan 5, 2026" showing when the
+  /// currently configured time-limited announcement would expire.
   String _getExpirationDateText() {
     DateTime expirationDate;
     try {
@@ -357,6 +369,8 @@ class _AnnouncementsScreenState extends State<AnnouncementsScreen> {
   Widget build(BuildContext context) {
     final provider = Provider.of<AnnouncementsProvider>(context);
     
+    // Overall layout: header, image upload card, then a responsive
+    // grid of existing announcements (or an empty state).
     return SingleChildScrollView(
       padding: const EdgeInsets.all(20),
       child: Column(
@@ -393,6 +407,9 @@ class _AnnouncementsScreenState extends State<AnnouncementsScreen> {
                   ),
                   const SizedBox(height: 20),
 
+                  // The tap here delegates to [AnnouncementsProvider.uploadImage],
+                  // which in turn uses a platform-specific implementation
+                  // (web vs mobile/desktop) to pick and upload an image.
                   GestureDetector(
                     onTap: () async {
                       await provider.uploadImage();
@@ -443,24 +460,24 @@ class _AnnouncementsScreenState extends State<AnnouncementsScreen> {
                   const SizedBox(height: 20),
 
                   if (provider.uploadedImageUrl != null)
-                    Row(
-                      children: [
-                        Expanded(
-                          child: ElevatedButton(
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: Wrap(
+                        spacing: 10,
+                        runSpacing: 8,
+                        children: [
+                          ElevatedButton(
                             onPressed: () => provider.clearUploadedImage(),
                             style: AdminTheme.secondaryButtonStyle,
                             child: const Text('Remove Image'),
                           ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: ElevatedButton(
+                          ElevatedButton(
                             onPressed: () => _showAddDialog(context),
                             style: AdminTheme.primaryButtonStyle,
                             child: const Text('Add Announcement'),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                 ],
               ),
@@ -471,31 +488,46 @@ class _AnnouncementsScreenState extends State<AnnouncementsScreen> {
 
           // Active Announcements
           if (provider.announcements.isNotEmpty)
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Active Announcements (${provider.announcements.length})',
-                  style: AdminTheme.headingMedium,
-                ),
-                const SizedBox(height: 15),
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final width = constraints.maxWidth;
+                // Simple responsive breakpoints for grid columns
+                int crossAxisCount;
+                if (width < 600) {
+                  crossAxisCount = 1;
+                } else if (width < 1000) {
+                  crossAxisCount = 2;
+                } else {
+                  crossAxisCount = 3;
+                }
 
-                GridView.builder(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 3,
-                    crossAxisSpacing: 15,
-                    mainAxisSpacing: 15,
-                    childAspectRatio: 1.2,
-                  ),
-                  itemCount: provider.announcements.length,
-                  itemBuilder: (context, index) {
-                    final announcement = provider.announcements[index];
-                    return _buildAnnouncementCard(announcement, provider);
-                  },
-                ),
-              ],
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Active Announcements (${provider.announcements.length})',
+                      style: AdminTheme.headingMedium,
+                    ),
+                    const SizedBox(height: 15),
+
+                    GridView.builder(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: crossAxisCount,
+                        crossAxisSpacing: 15,
+                        mainAxisSpacing: 15,
+                        childAspectRatio: 1.2,
+                      ),
+                      itemCount: provider.announcements.length,
+                      itemBuilder: (context, index) {
+                        final announcement = provider.announcements[index];
+                        return _buildAnnouncementCard(announcement, provider);
+                      },
+                    ),
+                  ],
+                );
+              },
             ),
 
           if (provider.announcements.isEmpty)

@@ -131,9 +131,7 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
   DateTime? _masjidLocalTime;
   bool _timezoneResolved = false;
   
-  // WorldTimeAPI-based time tracking
-  DateTime? _lastApiFetchTime;
-  DateTime? _apiFetchedTime;
+  // Masjid-local time derived from timezone; no external time API needed
 
   late FirebaseFirestore firestore;
   StreamSubscription? _announcementsSub;
@@ -159,13 +157,13 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
 
     _initializeFirebase();
 
-    // Try to initialize current time from provider's masjid-local clock
-    try {
-      final p = Provider.of<PrayerTimesProvider>(context, listen: false);
-      now = p.masjidNow;
-    } catch (_) {
-      // keep device time fallback if provider not available
-    }
+    // Initialize current time using this screen's own timezone logic.
+    // As soon as a concrete timezone (e.g. "Australia/Adelaide") is
+    // resolved from Firestore/coordinates, _updateLocalTime will use
+    // it so the clock and timers are locked to the masjid location,
+    // not the device/browser timezone.
+    _updateLocalTime();
+    now = _masjidLocalTime ?? DateTime.now();
 
     _startClock();
     _calculateNextPrayer();
@@ -415,28 +413,62 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
   }
 
   Future<void> _resolveTimezoneFromCityCountry() async {
-    if (_masjidCity == null || _masjidCountry == null ||
-        _masjidCity!.isEmpty || _masjidCountry!.isEmpty) {
+    // We require at least *some* location hint: city/country or coordinates.
+    final hasCityOrCountry =
+        (_masjidCity != null && _masjidCity!.trim().isNotEmpty) ||
+        (_masjidCountry != null && _masjidCountry!.trim().isNotEmpty);
+    final hasCoords = _masjidLatitude != null && _masjidLongitude != null;
+
+    if (!hasCityOrCountry && !hasCoords) {
       return;
     }
 
     if (_timezoneResolved) return;
 
     try {
-      // Keep TV timezone resolution in sync with PrayerTimesProvider:
-      // if no explicit timezone is set (or it's "Auto"),
-      // fall back to guessing from the country.
-      final guessed = TimezoneService.guessTimezoneFromCountry(_masjidCountry!);
-      if (guessed != null && guessed.isNotEmpty) {
-        _timezoneName = guessed;
+      String? tzId;
+
+      // 1) Prefer coordinate-based lookup when we have lat/lng; this
+      // gives us the exact city timezone (including Adelaide, etc.).
+      if (hasCoords) {
+        tzId = await _getTimezoneFromLatLng(_masjidLatitude!, _masjidLongitude!);
+      }
+
+      // 2) If that failed, try a simple city/country map with
+      // explicit entries for common cities.
+      if ((tzId == null || tzId.isEmpty) && hasCityOrCountry) {
+        final city = _masjidCity?.trim() ?? '';
+        final country = _masjidCountry?.trim() ?? '';
+        tzId = _getSimpleTimezoneFromCityCountry(city, country);
+      }
+
+      // 3) As a last resort, fall back to a country-level guess.
+      if ((tzId == null || tzId.isEmpty) && _masjidCountry != null && _masjidCountry!.trim().isNotEmpty) {
+        tzId = TimezoneService.guessTimezoneFromCountry(_masjidCountry!.trim());
+      }
+
+      if (tzId != null && tzId.isNotEmpty) {
+        _timezoneName = tzId;
         _timezoneResolved = true;
-        print('Resolved timezone from country via TimezoneService: $_timezoneName');
+        print('Resolved timezone for TV display: $_timezoneName');
         _updateLocalTime();
         if (mounted) {
           setState(() {
             now = _masjidLocalTime ?? DateTime.now();
           });
         }
+        return;
+      }
+
+      // If everything failed, fall back to device time but keep the flag
+      // so we don't loop endlessly.
+      _timezoneName = 'Device Time';
+      _timezoneResolved = true;
+      _updateLocalTime();
+      if (mounted) {
+        setState(() {
+          now = _masjidLocalTime ?? DateTime.now();
+        });
       }
     } catch (e) {
       print('Error resolving timezone: $e');
@@ -514,15 +546,11 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
   }
 
   String _getSimpleTimezoneFromCityCountry(String city, String country) {
-    // Use TimezoneService which has a comprehensive country mapping
-    final tzId = TimezoneService.guessTimezoneFromCountry(country);
-    if (tzId != null && tzId.isNotEmpty) {
-      return tzId;
-    }
-    
     // Simple fallback for common cities
     final cityLower = city.toLowerCase();
     const timezoneMap = {
+      // Australia multi-timezone handling
+      'adelaide': 'Australia/Adelaide',
       'riyadh': 'Asia/Riyadh',
       'jeddah': 'Asia/Riyadh',
       'dubai': 'Asia/Dubai',
@@ -557,85 +585,19 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
         return;
       }
 
-      // Try tz package first (instant, no API call)
+      // Use timezone package to compute masjid-local time. This handles
+      // DST and city-level differences for the stored IANA timezone.
       try {
         final location = tz.getLocation(_timezoneName!);
         _masjidLocalTime = tz.TZDateTime.now(location);
-        return;
-      } catch (_) {
-        // tz doesn't have this timezone, will use API
-      }
-
-      // Use WorldTimeAPI - fetch every 60 seconds to avoid rate limits
-      final now = DateTime.now();
-      final shouldFetch = _lastApiFetchTime == null ||
-          now.difference(_lastApiFetchTime!).inSeconds >= 60;
-
-      if (shouldFetch) {
-        // Start the fetch but don't block on it - it will update _masjidLocalTime when ready
-        _fetchWorldTimeAndUpdate(_timezoneName!);
-        // While we wait for the API, use interpolation from last fetch if available
-        if (_apiFetchedTime != null && _lastApiFetchTime != null) {
-          final elapsed = now.difference(_lastApiFetchTime!);
-          _masjidLocalTime = _apiFetchedTime!.add(elapsed);
-        } else {
-          // First fetch not yet complete, use device time temporarily
-          _masjidLocalTime = DateTime.now();
-        }
-      } else if (_apiFetchedTime != null && _lastApiFetchTime != null) {
-        // Interpolate: add elapsed time since last fetch
-        final elapsed = now.difference(_lastApiFetchTime!);
-        _masjidLocalTime = _apiFetchedTime!.add(elapsed);
-      } else {
+        print('TV local time update -> tz: $_timezoneName, masjidLocal: $_masjidLocalTime, device: ${DateTime.now()}');
+      } catch (e) {
+        print('Unknown timezone "$_timezoneName" – falling back to device time: $e');
         _masjidLocalTime = DateTime.now();
       }
     } catch (e) {
       print('Error updating local time: $e');
       _masjidLocalTime = DateTime.now();
-    }
-  }
-
-  Future<void> _fetchWorldTimeAndUpdate(String timezoneId) async {
-    try {
-      final url = Uri.http('worldtimeapi.org', '/api/timezone/$timezoneId');
-      final resp = await http.get(url).timeout(const Duration(seconds: 8));
-      if (resp.statusCode == 200) {
-        final data = jsonDecode(resp.body);
-        final dtStr = data['datetime'] as String?;
-        if (dtStr != null) {
-          _apiFetchedTime = DateTime.parse(dtStr);
-          _lastApiFetchTime = DateTime.now();
-          _masjidLocalTime = _apiFetchedTime;
-          print('Fetched masjid time from API: $_masjidLocalTime (TZ: $timezoneId)');
-          // Trigger a rebuild with the new time
-          if (mounted) {
-            setState(() {
-              now = _masjidLocalTime!;
-            });
-          }
-        }
-      }
-    } catch (e) {
-      print('WorldTimeAPI fetch failed for $timezoneId: $e');
-    }
-  }
-
-  Future<void> _fetchWorldTimeAndUpdateSynchronous(String timezoneId) async {
-    try {
-      final url = Uri.http('worldtimeapi.org', '/api/timezone/$timezoneId');
-      final resp = await http.get(url).timeout(const Duration(seconds: 8));
-      if (resp.statusCode == 200) {
-        final data = jsonDecode(resp.body);
-        final dtStr = data['datetime'] as String?;
-        if (dtStr != null) {
-          _apiFetchedTime = DateTime.parse(dtStr);
-          _lastApiFetchTime = DateTime.now();
-          _masjidLocalTime = _apiFetchedTime;
-          print('Fetched masjid time from API (sync): $_masjidLocalTime (TZ: $timezoneId)');
-        }
-      }
-    } catch (e) {
-      print('WorldTimeAPI sync fetch failed for $timezoneId: $e');
     }
   }
 
@@ -806,19 +768,11 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
 
   void _startClock() {
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
-      DateTime newNow;
-
-      // Prefer the masjid-local clock maintained by PrayerTimesProvider
-      // when it is available (admin dashboard / embedded preview).
-      // Fallback to our own timezone logic when the provider is not present
-      // (standalone TV client).
-      try {
-        final p = Provider.of<PrayerTimesProvider>(context, listen: false);
-        newNow = p.masjidNow;
-      } catch (_) {
-        _updateLocalTime();
-        newNow = _masjidLocalTime ?? DateTime.now();
-      }
+      // Always drive the TV clock from the masjid-local timezone
+      // resolved on this screen, completely independent of the
+      // device/browser timezone.
+      _updateLocalTime();
+      final DateTime newNow = _masjidLocalTime ?? DateTime.now();
 
       setState(() {
         now = newNow;
@@ -882,35 +836,61 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
       return;
     }
 
-    currentPrayerName = latestPrayerName;
-    _currentPrayerForIqamah = latestPrayerName;
-    isAdhanTime = true;
-
     // Handle iqamah status/countdown for the current prayer
     final entry = source.entries.firstWhere(
-      (e) => e.key.toLowerCase() == latestPrayerName?.toLowerCase(),
+      (e) => latestPrayerName != null && e.key.toLowerCase() == latestPrayerName.toLowerCase(),
       orElse: () => MapEntry('', const {}),
     );
 
     if (entry.key.isEmpty) return;
 
     final iqamahStr = (entry.value['iqamah'] ?? '').toString();
-    if (iqamahStr.isEmpty || iqamahStr == '--:--') {
+    DateTime? iqamahTime;
+    if (iqamahStr.isNotEmpty && iqamahStr != '--:--') {
+      iqamahTime = _parseTimeToDateTime(iqamahStr, latestAdhan);
+    }
+
+    // Define a finite "active" window for this prayer.
+    // - If iqamah is configured: from adhan until iqamah + 20 minutes.
+    // - If no iqamah: from adhan until adhan + 30 minutes.
+    final DateTime windowStart = latestAdhan;
+    final DateTime windowEnd;
+    if (iqamahTime != null && !iqamahTime.isBefore(windowStart)) {
+      windowEnd = iqamahTime.add(const Duration(minutes: 20));
+    } else {
+      windowEnd = windowStart.add(const Duration(minutes: 30));
+    }
+
+    // If we're outside the active window, do not show any
+    // "current prayer in progress" state.
+    if (now.isBefore(windowStart) || now.isAfter(windowEnd)) {
+      _iqamahTimer?.cancel();
       return;
     }
 
-    // Parse iqamah using the same day as the selected adhan
-    final iqamahTime = _parseTimeToDateTime(iqamahStr, latestAdhan);
-    if (iqamahTime == null) return;
+    currentPrayerName = latestPrayerName;
+    _currentPrayerForIqamah = latestPrayerName;
+
+    // No iqamah configured: treat the whole window as generic adhan time.
+    if (iqamahTime == null || iqamahStr.isEmpty || iqamahStr == '--:--') {
+      isAdhanTime = true;
+      isIqamahTime = false;
+      showIqamahStarted = false;
+      iqamahCountdown = Duration.zero;
+      _iqamahTimer?.cancel();
+      return;
+    }
 
     if (now.isBefore(iqamahTime)) {
       // Between adhan and iqamah – show countdown
+      isAdhanTime = true;
       iqamahCountdown = iqamahTime.difference(now);
       isIqamahTime = false;
       showIqamahStarted = false;
       _iqamahTimer?.cancel();
     } else {
-      // At or after iqamah
+      // At or after iqamah, but still within the prayer window
+      isAdhanTime = true;
       isIqamahTime = true;
       final iqamahEndTime = iqamahTime.add(const Duration(minutes: 20));
       if (now.isBefore(iqamahEndTime)) {
@@ -928,14 +908,19 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
           }
         });
       } else {
+        // Safety fallback; normally covered by windowEnd check above.
         showIqamahStarted = false;
         isIqamahTime = false;
+        isAdhanTime = false;
       }
     }
   }
 
   void _calculateNextPrayer() {
-    final today = now;
+    // Always base "next prayer" purely on the same `now`
+    // value that is shown on the digital clock so the
+    // countdown and the clock stay perfectly in sync.
+    final DateTime base = now;
     DateTime? nextTime;
     String? nextName;
 
@@ -957,23 +942,30 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
       if (entry.key.isEmpty) continue;
 
       final adhan = (entry.value['adhan'] ?? '--:--').toString().trim();
-      final parsed = _parseTimeToDateTime(adhan, today);
+      final parsed = _parseTimeToDateTime(adhan, base);
       if (parsed == null) continue;
 
-      var time = parsed;
-      if (time.isBefore(now)) {
-        time = time.add(const Duration(days: 1));
+      var candidate = parsed;
+      // If today's adhan time has already passed in masjid-local
+      // time, treat the "next" occurrence as tomorrow.
+      if (!candidate.isAfter(base)) {
+        candidate = candidate.add(const Duration(days: 1));
       }
 
-      if (nextTime == null || time.isBefore(nextTime!)) {
-        nextTime = time;
+      if (nextTime == null || candidate.isBefore(nextTime!)) {
+        nextTime = candidate;
         nextName = prayer;
       }
     }
 
     if (nextTime != null && nextName != null) {
       nextPrayerName = nextName;
-      nextPrayerCountdown = nextTime!.difference(now);
+      nextPrayerCountdown = nextTime!.difference(base);
+    } else {
+      // If we couldn't determine a valid next prayer (e.g. bad data),
+      // reset the display instead of leaving a stale countdown.
+      nextPrayerName = '';
+      nextPrayerCountdown = Duration.zero;
     }
   }
 
@@ -994,19 +986,39 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
       } catch (_) {}
     }
 
-    if (parsed == null) {
+    int hour = -1;
+    int minute = -1;
+
+    if (parsed != null) {
+      hour = parsed.hour;
+      minute = parsed.minute;
+    } else {
       if (!value.contains(':')) return null;
       final parts = value.split(':');
       if (parts.length < 2) return null;
-      final hour = int.tryParse(parts[0]) ?? -1;
-      final minute =
-          int.tryParse(parts[1].replaceAll(RegExp(r'[^0-9]'), '')) ?? -1;
-      if (hour < 0 || minute < 0 || hour > 23 || minute > 59) return null;
-      return DateTime(base.year, base.month, base.day, hour, minute);
+      hour = int.tryParse(parts[0]) ?? -1;
+      minute = int.tryParse(parts[1].replaceAll(RegExp(r'[^0-9]'), '')) ?? -1;
     }
 
-    return DateTime(
-        base.year, base.month, base.day, parsed.hour, parsed.minute);
+    if (hour < 0 || minute < 0 || hour > 23 || minute > 59) return null;
+
+    // Create a naive DateTime first
+    final naiveDt = DateTime(base.year, base.month, base.day, hour, minute);
+
+    // If we have a resolved timezone for the masjid, create a TZDateTime in that timezone
+    // so comparisons with _masjidLocalTime (also a TZDateTime) work correctly.
+    if (_timezoneName != null && _timezoneName!.isNotEmpty && _timezoneName != 'Device Time') {
+      try {
+        final location = tz.getLocation(_timezoneName!);
+        // Create a TZDateTime in the masjid's timezone using the naive time as-is
+        return tz.TZDateTime(location, naiveDt.year, naiveDt.month, naiveDt.day, naiveDt.hour, naiveDt.minute);
+      } catch (e) {
+        print('Error creating TZDateTime for prayer time: $e');
+      }
+    }
+
+    // Fallback: return naive DateTime (less accurate for timezone mismatches)
+    return naiveDt;
   }
 
   String _formatDuration(Duration d) {
@@ -1123,8 +1135,13 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
     }
 
     const prayerOrder = ['Fajr', 'Dhuhr', 'Asr', 'Maghrib', 'Isha'];
-    final screenWidth = MediaQuery.of(context).size.width;
-    final tileWidth = (screenWidth / prayerOrder.length) - 5;
+    final mediaSize = MediaQuery.of(context).size;
+    final screenWidth = mediaSize.width;
+    final screenHeight = mediaSize.height;
+    // Slightly increase the minimum scale so that the bar and
+    // its contents stay comfortably readable even on 720p TVs.
+    final scale = (screenHeight / 1080.0).clamp(0.9, 1.4);
+    final tileWidth = (screenWidth / prayerOrder.length) - 2;
     
     bool isActivePrayer(String prayer) {
       return prayer.toLowerCase() == currentPrayerName.toLowerCase() &&
@@ -1132,7 +1149,7 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
     }
 
     return Container(
-      height: 105,
+      height: 120 * scale,
       decoration: BoxDecoration(
         gradient: const LinearGradient(
           colors: [
@@ -1164,7 +1181,7 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
           final bool isActive = isActivePrayer(prayer);
 
           return SizedBox(
-            width: tileWidth.clamp(180.0, 280.0),
+            width: tileWidth.clamp(220.0 * scale, 320.0 * scale),
             child: Container(
               margin: EdgeInsets.symmetric(
                 horizontal: 3, 
@@ -1264,7 +1281,7 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
                 children: [
                   // Prayer Name on Left Side
                   Container(
-                    width: 90,
+                    width: 90 * scale,
                     decoration: BoxDecoration(
                       color: isNext 
                           ? Colors.green[900]?.withOpacity(0.3)
@@ -1281,7 +1298,7 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
                         maxLines: 1,
                         overflow: TextOverflow.clip,
                         style: TextStyle(
-                          fontSize: 22,
+                          fontSize: 22 * scale,
                           fontWeight: FontWeight.w900,
                           color: Colors.white,
                           fontFamily: 'Roboto',
@@ -1307,120 +1324,136 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
                   // Times Section on Right
                   Expanded(
                     child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          // HEADINGS Row - ADHAN and IQAMAH side by side
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      padding: EdgeInsets.symmetric(horizontal: isNext ? 4 : 8, vertical: 4),
+                      child: LayoutBuilder(
+                        builder: (context, constraints) {
+                          const double baseNeededHeight = 80.0;
+                          final double available = constraints.maxHeight;
+                          // Keep text large and readable, but still allow
+                          // a bit of shrink when vertical space is tight.
+                          final double localScale = (available / baseNeededHeight)
+                              .clamp(0.7, 1.0);
+
+                          // Reduce heading font for next prayer to prevent text wrapping
+                          final double headingFont = (isNext ? 13 : 16) * scale * localScale;
+                          final double timeFont = (isNext ? 26 : 24) * scale * localScale;
+
+                          return Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
-                              Expanded(
-                                child: Text(
-                                  'ADHAN',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 15,
-                                    fontWeight: FontWeight.w800,
-                                    color: Colors.white,
-                                    letterSpacing: 1,
-                                    shadows: [
-                                      Shadow(
-                                        blurRadius: 5,
-                                        color: Colors.black.withOpacity(0.8),
-                                        offset: const Offset(1, 1),
+                              // HEADINGS Row - ADHAN and IQAMAH side by side
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      'ADHAN',
+                                      textAlign: TextAlign.center,
+                                      style: TextStyle(
+                                        fontSize: headingFont,
+                                        fontWeight: FontWeight.w800,
+                                        color: Colors.white,
+                                        letterSpacing: 1,
+                                        shadows: [
+                                          Shadow(
+                                            blurRadius: 5,
+                                            color: Colors.black.withOpacity(0.8),
+                                            offset: const Offset(1, 1),
+                                          ),
+                                        ],
                                       ),
-                                    ],
+                                    ),
                                   ),
-                                ),
+                                  Expanded(
+                                    child: Text(
+                                      'IQAMAH',
+                                      textAlign: TextAlign.center,
+                                      style: TextStyle(
+                                        fontSize: headingFont,
+                                        fontWeight: FontWeight.w800,
+                                        color: Colors.white,
+                                        letterSpacing: 1,
+                                        shadows: [
+                                          Shadow(
+                                            blurRadius: 5,
+                                            color: Colors.black.withOpacity(0.8),
+                                            offset: const Offset(1, 1),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ],
                               ),
-                              Expanded(
-                                child: Text(
-                                  'IQAMAH',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 15,
-                                    fontWeight: FontWeight.w800,
-                                    color: Colors.white,
-                                    letterSpacing: 1,
-                                    shadows: [
-                                      Shadow(
-                                        blurRadius: 5,
-                                        color: Colors.black.withOpacity(0.8),
-                                        offset: const Offset(1, 1),
+
+                              const SizedBox(height: 2),
+
+                              // TIMES Row
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  // ADHAN Time
+                                  Expanded(
+                                    child: Text(
+                                      entry.value['adhan'] ?? '--:--',
+                                      textAlign: TextAlign.center,
+                                      style: TextStyle(
+                                        fontSize: timeFont,
+                                        fontWeight: FontWeight.w900,
+                                        color: Colors.white,
+                                        fontFamily: 'RobotoMono',
+                                        letterSpacing: 1.2,
+                                        shadows: [
+                                          Shadow(
+                                            blurRadius: 6,
+                                            color: Colors.black.withOpacity(0.8),
+                                            offset: const Offset(2, 2),
+                                          ),
+                                          if (isNext)
+                                            Shadow(
+                                              blurRadius: 3,
+                                              color: Colors.greenAccent.withOpacity(0.5),
+                                              offset: const Offset(-1, -1),
+                                            ),
+                                        ],
                                       ),
-                                    ],
+                                    ),
                                   ),
-                                ),
+
+                                  // IQAMAH Time
+                                  Expanded(
+                                    child: Text(
+                                      entry.value['iqamah'] ?? '--:--',
+                                      textAlign: TextAlign.center,
+                                      style: TextStyle(
+                                        fontSize: timeFont,
+                                        fontWeight: FontWeight.w900,
+                                        color: Colors.white,
+                                        fontFamily: 'RobotoMono',
+                                        letterSpacing: 1.2,
+                                        shadows: [
+                                          Shadow(
+                                            blurRadius: 6,
+                                            color: Colors.black.withOpacity(0.8),
+                                            offset: const Offset(2, 2),
+                                          ),
+                                          if (isNext)
+                                            Shadow(
+                                              blurRadius: 3,
+                                              color: Colors.greenAccent.withOpacity(0.5),
+                                              offset: const Offset(-1, -1),
+                                            ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ],
                               ),
                             ],
-                          ),
-                          
-                          const SizedBox(height: 6),
-                          
-                          // TIMES Row
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              // ADHAN Time
-                              Expanded(
-                                child: Text(
-                                  entry.value['adhan'] ?? '--:--',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: isNext ? 26 : 22,
-                                    fontWeight: FontWeight.w900,
-                                    color: Colors.white,
-                                    fontFamily: 'RobotoMono',
-                                    letterSpacing: 1.5,
-                                    shadows: [
-                                      Shadow(
-                                        blurRadius: 6,
-                                        color: Colors.black.withOpacity(0.8),
-                                        offset: const Offset(2, 2),
-                                      ),
-                                      if (isNext)
-                                        Shadow(
-                                          blurRadius: 3,
-                                          color: Colors.greenAccent.withOpacity(0.5),
-                                          offset: const Offset(-1, -1),
-                                        ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                              
-                              // IQAMAH Time
-                              Expanded(
-                                child: Text(
-                                  entry.value['iqamah'] ?? '--:--',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: isNext ? 26 : 22,
-                                    fontWeight: FontWeight.w900,
-                                    color: Colors.white,
-                                    fontFamily: 'RobotoMono',
-                                    letterSpacing: 1.5,
-                                    shadows: [
-                                      Shadow(
-                                        blurRadius: 6,
-                                        color: Colors.black.withOpacity(0.8),
-                                        offset: const Offset(2, 2),
-                                      ),
-                                      if (isNext)
-                                        Shadow(
-                                          blurRadius: 3,
-                                          color: Colors.greenAccent.withOpacity(0.5),
-                                          offset: const Offset(-1, -1),
-                                        ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
+                          );
+                        },
                       ),
                     ),
                   ),
@@ -1443,6 +1476,10 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
     }
 
     const prayerOrder = ['Fajr', 'Dhuhr', 'Asr', 'Maghrib', 'Isha'];
+    final screenHeight = MediaQuery.of(context).size.height;
+    // Match the horizontal bar's behavior so that text remains
+    // clearly visible even on smaller displays.
+    final scale = (screenHeight / 1080.0).clamp(0.9, 1.4);
     
     bool isActivePrayer(String prayer) {
       return prayer.toLowerCase() == currentPrayerName.toLowerCase() &&
@@ -1450,7 +1487,7 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
     }
 
     return Container(
-      height: 90,
+      height: 90 * scale,
       padding: const EdgeInsets.symmetric(vertical: 6),
       decoration: BoxDecoration(
         gradient: const LinearGradient(
@@ -1569,7 +1606,7 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
                               Text(
                                 'A:',
                                 style: TextStyle(
-                                  fontSize: 11,
+                                  fontSize: 11 * scale,
                                   fontWeight: FontWeight.w700,
                                   color: Colors.white.withOpacity(0.9),
                                 ),
@@ -1577,8 +1614,8 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
                               const SizedBox(width: 2),
                               Text(
                                 entry.value['adhan'] ?? '--:--',
-                                style: const TextStyle(
-                                  fontSize: 16,
+                                style: TextStyle(
+                                  fontSize: 16 * scale,
                                   fontWeight: FontWeight.w900,
                                   color: Colors.white,
                                   fontFamily: 'RobotoMono',
@@ -1603,7 +1640,7 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
                               Text(
                                 'I:',
                                 style: TextStyle(
-                                  fontSize: 11,
+                                  fontSize: 11 * scale,
                                   fontWeight: FontWeight.w700,
                                   color: Colors.white.withOpacity(0.9),
                                 ),
@@ -1611,8 +1648,8 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
                               const SizedBox(width: 2),
                               Text(
                                 entry.value['iqamah'] ?? '--:--',
-                                style: const TextStyle(
-                                  fontSize: 16,
+                                style: TextStyle(
+                                  fontSize: 16 * scale,
                                   fontWeight: FontWeight.w900,
                                   color: Colors.white,
                                   fontFamily: 'RobotoMono',
@@ -1641,6 +1678,8 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
   }
 
   Widget _buildAdhanIqamahDisplay() {
+    final size = MediaQuery.of(context).size;
+    final scale = (size.height / 1080.0).clamp(0.7, 1.4);
     // 1. Show "Prayer has started" after iqamah
     if (showIqamahStarted && isIqamahTime) {
       return Container(
@@ -1651,31 +1690,31 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
             children: [
               Icon(
                 Icons.mosque,
-                size: 120,
+                size: 120 * scale,
                 color: Colors.green,
               ),
-              const SizedBox(height: 40),
+              SizedBox(height: 40 * scale),
               Text(
                 '$currentPrayerName PRAYER HAS STARTED',
                 style: TextStyle(
-                  fontSize: 48,
+                  fontSize: 48 * scale,
                   fontWeight: FontWeight.w900,
                   color: Colors.green,
                   fontFamily: 'Roboto',
                   letterSpacing: 2,
                 ),
               ),
-              const SizedBox(height: 20),
+              SizedBox(height: 20 * scale),
               Text(
                 'IQAMAH HAS BEEN CALLED',
                 style: TextStyle(
-                  fontSize: 28,
+                  fontSize: 28 * scale,
                   fontWeight: FontWeight.w700,
                   color: Colors.white,
                   fontFamily: 'Roboto',
                 ),
               ),
-              const SizedBox(height: 40),
+              SizedBox(height: 40 * scale),
               Container(
                 padding:
                     const EdgeInsets.symmetric(horizontal: 30, vertical: 15),
@@ -1687,7 +1726,7 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
                 child: Text(
                   'PLEASE JOIN THE CONGREGATION',
                   style: TextStyle(
-                    fontSize: 22,
+                    fontSize: 22 * scale,
                     fontWeight: FontWeight.w600,
                     color: Colors.white,
                     fontFamily: 'Roboto',
@@ -1710,31 +1749,31 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
             children: [
               Icon(
                 Icons.access_time_filled,
-                size: 120,
+                size: 120 * scale,
                 color: Colors.amber,
               ),
-              const SizedBox(height: 40),
+              SizedBox(height: 40 * scale),
               Text(
                 'IQAMAH',
                 style: TextStyle(
-                  fontSize: 48,
+                  fontSize: 48 * scale,
                   fontWeight: FontWeight.w900,
                   color: Colors.amber,
                   fontFamily: 'Roboto',
                   letterSpacing: 2,
                 ),
               ),
-              const SizedBox(height: 20),
+              SizedBox(height: 20 * scale),
               Text(
                 'For $currentPrayerName',
                 style: TextStyle(
-                  fontSize: 36,
+                  fontSize: 36 * scale,
                   fontWeight: FontWeight.w700,
                   color: Colors.white,
                   fontFamily: 'Roboto',
                 ),
               ),
-              const SizedBox(height: 40),
+              SizedBox(height: 40 * scale),
               Container(
                 padding:
                     const EdgeInsets.symmetric(horizontal: 30, vertical: 20),
@@ -1748,17 +1787,17 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
                     Text(
                       'STARTS IN',
                       style: TextStyle(
-                        fontSize: 24,
+                        fontSize: 24 * scale,
                         fontWeight: FontWeight.w600,
                         color: Colors.white,
                         fontFamily: 'Roboto',
                       ),
                     ),
-                    const SizedBox(height: 15),
+                    SizedBox(height: 15 * scale),
                     Text(
                       _formatDuration(iqamahCountdown),
                       style: TextStyle(
-                        fontSize: 64,
+                        fontSize: 64 * scale,
                         fontWeight: FontWeight.w900,
                         color: Colors.white,
                         fontFamily: 'RobotoMono',
@@ -1768,11 +1807,11 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
                   ],
                 ),
               ),
-              const SizedBox(height: 30),
+              SizedBox(height: 30 * scale),
               Text(
                 'PLEASE PREPARE FOR PRAYER',
                 style: TextStyle(
-                  fontSize: 20,
+                  fontSize: 20 * scale,
                   fontWeight: FontWeight.w500,
                   color: Colors.white.withOpacity(0.8),
                   fontFamily: 'Roboto',
@@ -1794,31 +1833,31 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
             children: [
               Icon(
                 Icons.mosque,
-                size: 120,
+                size: 120 * scale,
                 color: Colors.blue,
               ),
-              const SizedBox(height: 40),
+              SizedBox(height: 40 * scale),
               Text(
                 'ADHAN TIME',
                 style: TextStyle(
-                  fontSize: 48,
+                  fontSize: 48 * scale,
                   fontWeight: FontWeight.w900,
                   color: Colors.blue,
                   fontFamily: 'Roboto',
                   letterSpacing: 2,
                 ),
               ),
-              const SizedBox(height: 20),
+              SizedBox(height: 20 * scale),
               Text(
                 'For $currentPrayerName',
                 style: TextStyle(
-                  fontSize: 36,
+                  fontSize: 36 * scale,
                   fontWeight: FontWeight.w700,
                   color: Colors.white,
                   fontFamily: 'Roboto',
                 ),
               ),
-              const SizedBox(height: 40),
+              SizedBox(height: 40 * scale),
               Container(
                 padding:
                     const EdgeInsets.symmetric(horizontal: 30, vertical: 20),
@@ -1832,17 +1871,17 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
                     Text(
                       'PRAYER TIME',
                       style: TextStyle(
-                        fontSize: 24,
+                        fontSize: 24 * scale,
                         fontWeight: FontWeight.w600,
                         color: Colors.white,
                         fontFamily: 'Roboto',
                       ),
                     ),
-                    const SizedBox(height: 15),
+                    SizedBox(height: 15 * scale),
                     Text(
                       'IN PROGRESS',
                       style: TextStyle(
-                        fontSize: 32,
+                        fontSize: 32 * scale,
                         fontWeight: FontWeight.w900,
                         color: Colors.white,
                         fontFamily: 'Roboto',
@@ -1852,11 +1891,11 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
                   ],
                 ),
               ),
-              const SizedBox(height: 30),
+              SizedBox(height: 30 * scale),
               Text(
                 'PLEASE JOIN THE PRAYER',
                 style: TextStyle(
-                  fontSize: 20,
+                  fontSize: 20 * scale,
                   fontWeight: FontWeight.w500,
                   color: Colors.white.withOpacity(0.8),
                   fontFamily: 'Roboto',

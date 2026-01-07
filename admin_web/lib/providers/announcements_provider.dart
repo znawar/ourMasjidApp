@@ -1,11 +1,16 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:html' as html;
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
+import 'package:admin_web/utils/announcement_uploader.dart';
+
+/// Simple data model for a single announcement.
+///
+/// This is stored in Firestore under the `announcements` collection and is
+/// also used by the admin UI and TV display.
 class Announcement {
   final String id;
   final String title;
@@ -33,6 +38,8 @@ class Announcement {
   /// Returns true if the announcement is permanent (no expiration)
   bool get isPermanent => expiresAt == null;
 
+  /// Serializes this object into the Firestore/JSON structure used by the
+  /// admin panel and TV display.
   Map<String, dynamic> toJson() {
     return {
       'id': id,
@@ -48,6 +55,7 @@ class Announcement {
     };
   }
 
+  /// Creates an [Announcement] from a plain JSON/Map structure.
   static Announcement fromJson(Map<String, dynamic> json) {
     DateTime parsedDate;
     final rawDate = json['date'];
@@ -82,13 +90,16 @@ class Announcement {
     );
   }
 
-  static Announcement fromFirestoreDoc(
+    /// Creates an [Announcement] from a Firestore document snapshot.
+    static Announcement fromFirestoreDoc(
       DocumentSnapshot<Map<String, dynamic>> doc) {
     final data = doc.data() ?? <String, dynamic>{};
     return Announcement.fromJson(<String, dynamic>{...data, 'id': doc.id});
   }
 }
 
+/// Provider that manages the list of announcements for the current masjid
+/// and exposes helper methods for CRUD operations.
 class AnnouncementsProvider with ChangeNotifier {
   final List<Announcement> _announcements = [];
   String? _uploadedImageUrl;
@@ -117,6 +128,8 @@ class AnnouncementsProvider with ChangeNotifier {
     super.dispose();
   }
 
+  /// Called when the signed‑in masjid changes. Sets up a listener on the
+  /// `announcements` collection for that masjid.
   void setMasjidId(String masjidId) {
     final trimmed = masjidId.trim();
     if (trimmed.isEmpty) {
@@ -132,6 +145,8 @@ class AnnouncementsProvider with ChangeNotifier {
     _startListening();
   }
 
+  /// Begins listening to Firestore for changes to this masjid's
+  /// announcements. Also performs automatic cleanup of expired items.
   void _startListening() {
     final firestore = _firestore;
     final masjidId = _masjidId;
@@ -144,63 +159,67 @@ class AnnouncementsProvider with ChangeNotifier {
         .collection('announcements')
         .where('masjidId', isEqualTo: masjidId)
         .snapshots()
-        .listen((snapshot) {
-      final items = snapshot.docs.map(Announcement.fromFirestoreDoc).toList();
-      items.sort((a, b) => b.date.compareTo(a.date));
+        .listen((snapshot) async {
+      // Capture "now" once so all announcements in this snapshot use the
+      // same reference point when checking for expiration.
+      final now = DateTime.now();
+
+      // Split documents into active/non-expired and expired
+      final activeItems = <Announcement>[];
+      final expiredIds = <String>[];
+
+      // Split incoming docs into active and expired groups.
+      for (final doc in snapshot.docs) {
+        final ann = Announcement.fromFirestoreDoc(doc);
+
+        // If it has an expiresAt in the past, mark for deletion and
+        // do not include it in the in-memory list so TVs don't show it.
+        if (ann.expiresAt != null && now.isAfter(ann.expiresAt!)) {
+          expiredIds.add(ann.id);
+          continue;
+        }
+
+        activeItems.add(ann);
+      }
+
+      // Sort with newest first so the most recent announcements appear at
+      // the top of the list.
+      activeItems.sort((a, b) => b.date.compareTo(a.date));
       _announcements
         ..clear()
-        ..addAll(items);
+        ..addAll(activeItems);
       notifyListeners();
+
+      // Best-effort cleanup of expired docs in the background.
+      // This keeps the collection tidy and ensures they never
+      // reappear if other clients don't filter correctly.
+      for (final id in expiredIds) {
+        try {
+          await firestore.collection('announcements').doc(id).delete();
+        } catch (e) {
+          debugPrint('Failed to delete expired announcement $id: $e');
+        }
+      }
     }, onError: (e) {
       debugPrint('Error listening to announcements: $e');
     });
   }
 
-  // ImgBB API key
-  static const String _imgbbApiKey = '3c10d4bc4f9af5a906d48428e40d1611';
-
+  /// Opens a platform‑specific picker and uploads the image to ImgBB.
+  ///
+  /// The resulting public URL is stored in [_uploadedImageUrl] so the
+  /// announcement form can attach it when saving.
   Future<void> uploadImage() async {
     _isUploading = true;
     notifyListeners();
 
     try {
-      // Create a file input element
-      final input = html.FileUploadInputElement()..accept = 'image/*';
-      input.click();
-
-      await input.onChange.first;
-
-      if (input.files!.isNotEmpty) {
-        final file = input.files![0];
-        
-        // Read file as base64
-        final reader = html.FileReader();
-        reader.readAsDataUrl(file);
-        await reader.onLoad.first;
-        
-        final dataUrl = reader.result as String;
-        // Extract base64 data (remove "data:image/xxx;base64," prefix)
-        final base64Data = dataUrl.split(',').last;
-        
-        // Upload to ImgBB
-        final response = await http.post(
-          Uri.parse('https://api.imgbb.com/1/upload'),
-          body: {
-            'key': _imgbbApiKey,
-            'image': base64Data,
-          },
-        );
-        
-        if (response.statusCode == 200) {
-          final jsonResponse = json.decode(response.body);
-          if (jsonResponse['success'] == true) {
-            _uploadedImageUrl = jsonResponse['data']['url'];
-          } else {
-            throw Exception('ImgBB upload failed: ${jsonResponse['error']['message']}');
-          }
-        } else {
-          throw Exception('ImgBB upload failed with status: ${response.statusCode}');
-        }
+      // Delegate to platform-specific uploader. On web this will open
+      // a file picker and upload to ImgBB. On non-web platforms it
+      // safely returns null so the app can still run.
+      final url = await uploadAnnouncementImage();
+      if (url != null && url.isNotEmpty) {
+        _uploadedImageUrl = url;
       }
     } catch (e) {
       print('Error uploading image: $e');
@@ -211,6 +230,9 @@ class AnnouncementsProvider with ChangeNotifier {
     }
   }
 
+  /// Creates a new announcement document in Firestore for the current
+  /// masjid. If [expiresAt] is provided, the announcement will be
+  /// auto‑deleted by [_startListening] once it expires.
   Future<void> addAnnouncement(String title, String description, {DateTime? expiresAt}) async {
     final firestore = _firestore;
     final masjidId = _masjidId;
@@ -240,6 +262,7 @@ class AnnouncementsProvider with ChangeNotifier {
     notifyListeners();
   }
 
+  /// Permanently deletes the announcement with the given [id].
   Future<void> deleteAnnouncement(String id) async {
     final firestore = _firestore;
     if (firestore != null) {
@@ -247,6 +270,8 @@ class AnnouncementsProvider with ChangeNotifier {
     }
   }
 
+  /// Toggles the `active` flag for the announcement. Inactive
+  /// announcements remain in Firestore but do not show on the TV.
   Future<void> toggleAnnouncement(String id) async {
     final firestore = _firestore;
     if (firestore == null) return;
@@ -260,6 +285,8 @@ class AnnouncementsProvider with ChangeNotifier {
     }, SetOptions(merge: true));
   }
 
+  /// Clears the in‑memory uploaded image URL (used when the admin
+  /// wants to choose a different image before saving).
   void clearUploadedImage() {
     _uploadedImageUrl = null;
     notifyListeners();

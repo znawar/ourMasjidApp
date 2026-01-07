@@ -175,8 +175,10 @@ class _LoginScreenState extends State<LoginScreen> {
             ),
 
             SingleChildScrollView(
-              child: SizedBox(
-                height: size.height,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  minHeight: size.height,
+                ),
                 child: Padding(
                   padding: EdgeInsets.symmetric(
                     horizontal: isMobile ? 20 : size.width * 0.1,
@@ -252,7 +254,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                   ],
                                 ),
 
-                                const Spacer(),
+                                const SizedBox(height: 32),
 
                                 // Features
                                 Column(
@@ -278,7 +280,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                   ],
                                 ),
 
-                                const Spacer(),
+                                const SizedBox(height: 32),
 
                                 // TV Connection Button
                                 Align(

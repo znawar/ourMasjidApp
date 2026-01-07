@@ -12,6 +12,7 @@ class AuthProvider with ChangeNotifier {
   bool get isAuthenticated => _isAuthenticated;
   String get masjidName => _masjidName;
   String? get userId => _userId;
+  String? get email => FirebaseAuth.instance.currentUser?.email;
 
   AuthProvider() {
     _bootstrap();
@@ -183,6 +184,141 @@ class AuthProvider with ChangeNotifier {
     await prefs.remove('isAuthenticated');
     await prefs.remove('masjidName');
     await prefs.remove('userId');
+
+    notifyListeners();
+  }
+
+  /// Change the signed‑in user's password.
+  ///
+  /// This uses Firebase Auth and will re‑authenticate the user with
+  /// their current password before applying the new one.
+  Future<void> changePassword({
+    required String currentPassword,
+    required String newPassword,
+  }) async {
+    if (!_useFirebase) {
+      throw Exception('Password change is only available with Firebase login.');
+    }
+
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      throw Exception('No authenticated user. Please sign in again.');
+    }
+
+    final currentEmail = user.email;
+    if (currentEmail == null || currentEmail.trim().isEmpty) {
+      throw Exception('Current email not available for re‑authentication.');
+    }
+
+    try {
+      final credential = EmailAuthProvider.credential(
+        email: currentEmail,
+        password: currentPassword,
+      );
+
+      // Re‑authenticate then update password.
+      await user.reauthenticateWithCredential(credential);
+      await user.updatePassword(newPassword);
+    } catch (e) {
+      throw Exception('Failed to change password: $e');
+    }
+  }
+
+  /// Update the signed‑in user's login email address and keep the
+  /// Firestore masjid document in sync.
+  Future<void> updateEmail({
+    required String newEmail,
+    required String currentPassword,
+  }) async {
+    final trimmedEmail = newEmail.trim();
+    if (trimmedEmail.isEmpty) {
+      throw Exception('Email cannot be empty');
+    }
+
+    if (!_useFirebase) {
+      throw Exception('Email change is only available with Firebase login.');
+    }
+
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      throw Exception('No authenticated user. Please sign in again.');
+    }
+
+    final currentEmail = user.email;
+    if (currentEmail == null || currentEmail.trim().isEmpty) {
+      throw Exception('Current email not available for re‑authentication.');
+    }
+
+    try {
+      final credential = EmailAuthProvider.credential(
+        email: currentEmail,
+        password: currentPassword,
+      );
+
+      // Re‑authenticate and then update the auth email.
+      await user.reauthenticateWithCredential(credential);
+      await user.updateEmail(trimmedEmail);
+
+      // Keep the masjid document's email field in sync.
+      if (_userId != null && _userId!.trim().isNotEmpty) {
+        await FirebaseFirestore.instance
+            .collection('masjids')
+            .doc(_userId)
+            .set({
+          'email': trimmedEmail,
+        }, SetOptions(merge: true));
+      }
+    } catch (e) {
+      throw Exception('Failed to update email: $e');
+    }
+  }
+
+  /// Update basic masjid information in Firestore and local cache.
+  ///
+  /// This is used by the Settings page to persist changes to the
+  /// masjid name and contact details.
+  Future<void> updateMasjidInfo({
+    required String masjidName,
+    String? address,
+    String? phone,
+    String? email,
+  }) async {
+    final trimmedName = masjidName.trim();
+    if (trimmedName.isEmpty) {
+      throw Exception('Masjid name cannot be empty');
+    }
+
+    _masjidName = trimmedName;
+
+    try {
+      if (_useFirebase && _userId != null && _userId!.trim().isNotEmpty) {
+        await FirebaseFirestore.instance
+            .collection('masjids')
+            .doc(_userId)
+            .set({
+          // Keep both fields in sync for compatibility with the
+          // older mobile app which reads `name`.
+          'masjidName': trimmedName,
+          'name': trimmedName,
+          if (address != null) 'address': address.trim(),
+          if (phone != null) ...{
+            'phone': phone.trim(),
+            'phoneNumber': phone.trim(),
+          },
+          if (email != null) 'email': email.trim(),
+        }, SetOptions(merge: true));
+      }
+    } catch (e) {
+      print('Failed to update masjid info: $e');
+      rethrow;
+    }
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('masjidName', _masjidName);
+    } catch (e) {
+      print('Failed to persist masjid name locally: $e');
+    }
 
     notifyListeners();
   }

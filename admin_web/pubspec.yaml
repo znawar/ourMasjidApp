@@ -24,6 +24,7 @@ dependencies:
   
   # UI
   image_picker_web: ^3.0.1
+  image_picker: ^1.0.7
   shared_preferences: ^2.2.2
   google_fonts: ^6.3.3
   carousel_slider: ^5.0.0

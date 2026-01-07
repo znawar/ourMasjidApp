@@ -29,9 +29,6 @@ class PrayerTimesProvider with ChangeNotifier {
   // Masjid-local clock
   Timer? _masjidClockTimer;
   DateTime _masjidNow = DateTime.now();
-  DateTime? _lastApiFetchTime;
-  DateTime? _apiFetchedTime;
-  String? _resolvedTimezoneId;
 
   DateTime get masjidNow => _masjidNow;
 
@@ -58,54 +55,37 @@ class PrayerTimesProvider with ChangeNotifier {
         return;
       }
 
-      // Determine timezone ID
-      String? tzId = loc.timezone.trim();
+      // Determine timezone ID – prefer explicit IANA ID stored in settings.
+      String tzId = (loc.timezone).trim();
+
+      // Special-case Adelaide when timezone is not explicitly set.
+      // Australia has multiple timezones; if the city name clearly
+      // indicates Adelaide, prefer the correct IANA zone.
       if (tzId.isEmpty || tzId.toLowerCase() == 'auto') {
-        // Try to guess from country
-        tzId = TimezoneService.guessTimezoneFromCountry(loc.country);
-        if (tzId != null && tzId != _resolvedTimezoneId) {
-          _resolvedTimezoneId = tzId;
-          _apiFetchedTime = null; // force refetch
-          _lastApiFetchTime = null;
+        final city = (loc.city).trim().toLowerCase();
+
+        if (city.contains('adelaide')) {
+          tzId = 'Australia/Adelaide';
+        } else {
+          // Fallback: best-effort guess from country, but this may be
+          // inaccurate for countries with multiple timezones.
+          final guessed = TimezoneService.guessTimezoneFromCountry(loc.country);
+          if (guessed == null || guessed.trim().isEmpty) {
+            _masjidNow = DateTime.now();
+            notifyListeners();
+            return;
+          }
+          tzId = guessed;
         }
-      } else {
-        _resolvedTimezoneId = tzId;
       }
 
-      if (_resolvedTimezoneId == null || _resolvedTimezoneId!.isEmpty) {
-        _masjidNow = DateTime.now();
-        notifyListeners();
-        return;
-      }
-
-      // Try tz package first (instant, no API)
+      // Use timezone package to get masjid-local time; this correctly
+      // handles DST and city-level offsets for the chosen IANA zone.
       try {
-        final location = tz.getLocation(_resolvedTimezoneId!);
+        final location = tz.getLocation(tzId);
         _masjidNow = tz.TZDateTime.now(location);
-        notifyListeners();
-        return;
-      } catch (_) {
-        // tz package doesn't have this timezone, fall back to API
-      }
-
-      // Use WorldTimeAPI - fetch every 60 seconds to avoid rate limits
-      final now = DateTime.now();
-      final shouldFetch = _lastApiFetchTime == null ||
-          now.difference(_lastApiFetchTime!).inSeconds >= 60;
-
-      if (shouldFetch) {
-        final apiTime = await TimezoneService.getCurrentTimeForTimezone(_resolvedTimezoneId!);
-        if (apiTime != null) {
-          _apiFetchedTime = apiTime;
-          _lastApiFetchTime = now;
-        }
-      }
-
-      if (_apiFetchedTime != null && _lastApiFetchTime != null) {
-        // Compute current masjid time by adding elapsed seconds since last API fetch
-        final elapsed = now.difference(_lastApiFetchTime!);
-        _masjidNow = _apiFetchedTime!.add(elapsed);
-      } else {
+      } catch (e) {
+        debugPrint('Unknown timezone "$tzId" – falling back to device time: $e');
         _masjidNow = DateTime.now();
       }
 
@@ -257,6 +237,29 @@ class PrayerTimesProvider with ChangeNotifier {
       prayerTimeOverrides: const {},
       lastUpdated: DateTime.now(),
     );
+  }
+
+  /// Danger‑zone helper used by the Settings page to restore this
+  /// masjid's prayer settings back to sane defaults and persist
+  /// them to Firestore and local storage.
+  Future<void> resetAllSettings() async {
+    if (_masjidId == null || _masjidId!.trim().isEmpty) {
+      _errorMessage = 'Masjid not loaded yet. Please sign in again.';
+      notifyListeners();
+      return;
+    }
+
+    _createDefaultSettings();
+
+    try {
+      await _saveToFirestore();
+      await _saveToLocalStorage();
+      _errorMessage = null;
+    } catch (e) {
+      _errorMessage = 'Failed to reset settings: $e';
+    }
+
+    notifyListeners();
   }
 
   Future<void> updateIqamahMode(String prayerName, bool useDelay) async {
@@ -461,12 +464,12 @@ class PrayerTimesProvider with ChangeNotifier {
   Future<void> updateLocationSettings(LocationSettings newLocation) async {
     if (!_ensureReady()) return;
 
-    _prayerSettings = _prayerSettings!.copyWith(
-      location: newLocation,
-      lastUpdated: DateTime.now(),
-    );
+    // Start from the requested location, but normalise its timezone so
+    // both the admin UI and TV display always get a concrete timezone
+    // instead of falling back to the device clock.
+    var effectiveLocation = newLocation;
 
-    // If coordinates provided and timezone is Auto, attempt to resolve via APIs
+    // If coordinates provided and timezone is Auto/empty, attempt to resolve via APIs
     try {
       if ((newLocation.latitude != 0.0 || newLocation.longitude != 0.0) &&
           (newLocation.timezone.isEmpty || newLocation.timezone.toLowerCase() == 'auto')) {
@@ -508,15 +511,30 @@ class PrayerTimesProvider with ChangeNotifier {
 
         if (res != null) {
           final tzId = res.timezoneId;
-          _prayerSettings = _prayerSettings!.copyWith(
-            location: newLocation.copyWith(timezone: tzId),
-            lastUpdated: DateTime.now(),
-          );
+          effectiveLocation = newLocation.copyWith(timezone: tzId);
+        }
+      }
+
+      // If we still don't have a concrete timezone, fall back to
+      // a best-effort guess based on the country name. This ensures
+      // that simply selecting "Australia" (for example) gives an
+      // Australian timezone instead of leaving it as "Auto" and
+      // using the device's local clock.
+      if (effectiveLocation.timezone.isEmpty ||
+          effectiveLocation.timezone.toLowerCase() == 'auto') {
+        final guess = TimezoneService.guessTimezoneFromCountry(effectiveLocation.country);
+        if (guess != null && guess.isNotEmpty) {
+          effectiveLocation = effectiveLocation.copyWith(timezone: guess);
         }
       }
     } catch (e) {
       debugPrint('Timezone lookup failed: $e');
     }
+
+    _prayerSettings = _prayerSettings!.copyWith(
+      location: effectiveLocation,
+      lastUpdated: DateTime.now(),
+    );
 
     await _saveToFirestore();
     await _saveToLocalStorage();
