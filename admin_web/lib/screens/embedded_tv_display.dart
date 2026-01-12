@@ -12,7 +12,6 @@ import 'tv_connection_screen.dart';
 import 'package:provider/provider.dart';
 import '../providers/prayer_times_provider.dart';
 import '../services/timezone_service.dart';
-import '../services/prayer_api_service.dart';
 
 class Wakelock {
   static Future<void> enable() async {}
@@ -108,7 +107,6 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
   bool isIqamahTime = false;
   bool showIqamahStarted = false;
   Timer? _iqamahTimer;
-  String? _currentPrayerForIqamah;
 
   // Firebase data
   List<Map<String, dynamic>> firebaseAnnouncements = [];
@@ -483,6 +481,8 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
     }
   }
 
+  // Unused method - timezone is now handled via timezone_service and location data
+  /* 
   Future<String?> _getTimezoneFromAPI(String city, String country) async {
     try {
       // Using TimezoneDB API (you need to sign up for a free API key)
@@ -520,6 +520,7 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
       return null;
     }
   }
+  */
 
   Future<String?> _getTimezoneFromLatLng(double lat, double lng) async {
     try {
@@ -549,7 +550,8 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
     // Simple fallback for common cities
     final cityLower = city.toLowerCase();
     const timezoneMap = {
-      // Australia multi-timezone handling
+      
+      'sydney': 'Australia/Sydney',
       'adelaide': 'Australia/Adelaide',
       'riyadh': 'Asia/Riyadh',
       'jeddah': 'Asia/Riyadh',
@@ -791,7 +793,6 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
     isAdhanTime = false;
     isIqamahTime = false;
     currentPrayerName = '';
-    _currentPrayerForIqamah = '';
     iqamahCountdown = Duration.zero;
     showIqamahStarted = false;
 
@@ -850,9 +851,7 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
       iqamahTime = _parseTimeToDateTime(iqamahStr, latestAdhan);
     }
 
-    // Define a finite "active" window for this prayer.
-    // - If iqamah is configured: from adhan until iqamah + 20 minutes.
-    // - If no iqamah: from adhan until adhan + 30 minutes.
+  
     final DateTime windowStart = latestAdhan;
     final DateTime windowEnd;
     if (iqamahTime != null && !iqamahTime.isBefore(windowStart)) {
@@ -869,7 +868,6 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
     }
 
     currentPrayerName = latestPrayerName;
-    _currentPrayerForIqamah = latestPrayerName;
 
     // No iqamah configured: treat the whole window as generic adhan time.
     if (iqamahTime == null || iqamahStr.isEmpty || iqamahStr == '--:--') {
@@ -952,7 +950,7 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
         candidate = candidate.add(const Duration(days: 1));
       }
 
-      if (nextTime == null || candidate.isBefore(nextTime!)) {
+      if (nextTime == null || candidate.isBefore(nextTime)) {
         nextTime = candidate;
         nextName = prayer;
       }
@@ -960,7 +958,7 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
 
     if (nextTime != null && nextName != null) {
       nextPrayerName = nextName;
-      nextPrayerCountdown = nextTime!.difference(base);
+      nextPrayerCountdown = nextTime.difference(base);
     } else {
       // If we couldn't determine a valid next prayer (e.g. bad data),
       // reset the display instead of leaving a stale countdown.
@@ -1047,16 +1045,40 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
     try {
       final provider = Provider.of<PrayerTimesProvider>(context, listen: false);
       final st = provider.prayerSettings?.specialTimes;
-      final time = st?.suhoorEndTime;
-      if (time != null && time.isNotEmpty) {
-        return time;
+      
+      // If manual mode is enabled, return the manually set time
+      if (st?.useManualRamadanTimes == true) {
+        final time = st?.suhoorEndTime;
+        if (time != null && time.isNotEmpty) {
+          return time;
+        }
+      }
+      
+      // Otherwise, calculate from Fajr + Imsak offset
+      final fajr = provider.prayerSettings?.prayerTimes['Fajr']?.adhan;
+      final offset = st?.imsakOffsetMinutes ?? -15;
+      if (fajr != null && fajr.isNotEmpty) {
+        return _calculateTimeWithOffset(fajr, offset);
       }
     } catch (_) {
+      // Fall back to raw firebase map if provider fails
       final specialTimes = firebasePrayerTimes['specialTimes'];
       if (specialTimes is Map) {
-        final time = specialTimes['suhoorEndTime'];
-        if (time is String && time.isNotEmpty) {
-          return time;
+        final useManual = specialTimes['useManualRamadanTimes'] == true;
+        if (useManual) {
+          final time = specialTimes['suhoorEndTime'];
+          if (time is String && time.isNotEmpty) {
+            return time;
+          }
+        }
+        
+        // Calculate from current prayer times data
+        final fajrTime = _currentPrayerTimes['Fajr']?['adhan'] ?? '';
+        final offset = (specialTimes['imsakOffsetMinutes'] is int 
+            ? specialTimes['imsakOffsetMinutes'] 
+            : -15) as int;
+        if (fajrTime.isNotEmpty) {
+          return _calculateTimeWithOffset(fajrTime, offset);
         }
       }
     }
@@ -1067,20 +1089,70 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
     try {
       final provider = Provider.of<PrayerTimesProvider>(context, listen: false);
       final st = provider.prayerSettings?.specialTimes;
-      final time = st?.iftarTime;
-      if (time != null && time.isNotEmpty) {
-        return time;
+      
+      // If manual mode is enabled, return the manually set time
+      if (st?.useManualRamadanTimes == true) {
+        final time = st?.iftarTime;
+        if (time != null && time.isNotEmpty) {
+          return time;
+        }
+      }
+      
+      // Otherwise, calculate from Maghrib + Iftar offset
+      final maghrib = provider.prayerSettings?.prayerTimes['Maghrib']?.adhan;
+      final offset = st?.iftarOffsetMinutes ?? 0;
+      if (maghrib != null && maghrib.isNotEmpty) {
+        return _calculateTimeWithOffset(maghrib, offset);
       }
     } catch (_) {
+      // Fall back to raw firebase map if provider fails
       final specialTimes = firebasePrayerTimes['specialTimes'];
       if (specialTimes is Map) {
-        final time = specialTimes['iftarTime'];
-        if (time is String && time.isNotEmpty) {
-          return time;
+        final useManual = specialTimes['useManualRamadanTimes'] == true;
+        if (useManual) {
+          final time = specialTimes['iftarTime'];
+          if (time is String && time.isNotEmpty) {
+            return time;
+          }
+        }
+        
+        // Calculate from current prayer times data
+        final maghribTime = _currentPrayerTimes['Maghrib']?['adhan'] ?? '';
+        final offset = (specialTimes['iftarOffsetMinutes'] is int 
+            ? specialTimes['iftarOffsetMinutes'] 
+            : 0) as int;
+        if (maghribTime.isNotEmpty) {
+          return _calculateTimeWithOffset(maghribTime, offset);
         }
       }
     }
     return '--:--';
+  }
+
+  /// Helper method to calculate time with offset (positive or negative)
+  String _calculateTimeWithOffset(String timeStr, int offsetMinutes) {
+    try {
+      final parts = timeStr.split(':');
+      if (parts.length < 2) return '--:--';
+      
+      final hour = int.tryParse(parts[0]) ?? -1;
+      final minute = int.tryParse(parts[1].replaceAll(RegExp(r'[^0-9]'), '')) ?? -1;
+      
+      if (hour < 0 || minute < 0 || hour > 23 || minute > 59) return '--:--';
+      
+      // Create a naive DateTime and add the offset
+      var resultTime = DateTime(2024, 1, 1, hour, minute);
+      resultTime = resultTime.add(Duration(minutes: offsetMinutes));
+      
+      // Handle day wrapping
+      if (resultTime.day > 1) resultTime = resultTime.subtract(const Duration(days: 1));
+      if (resultTime.day < 1) resultTime = resultTime.add(const Duration(days: 1));
+      
+      return '${resultTime.hour.toString().padLeft(2, '0')}:${resultTime.minute.toString().padLeft(2, '0')}';
+    } catch (e) {
+      print('Error calculating time with offset: $e');
+      return '--:--';
+    }
   }
 
   Widget _buildRamadanTimeRow(String label, String time) {
@@ -1334,7 +1406,6 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
                           final double localScale = (available / baseNeededHeight)
                               .clamp(0.7, 1.0);
 
-                          // Reduce heading font for next prayer to prevent text wrapping
                           final double headingFont = (isNext ? 13 : 16) * scale * localScale;
                           final double timeFont = (isNext ? 26 : 24) * scale * localScale;
 

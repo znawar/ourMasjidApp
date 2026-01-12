@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:timezone/timezone.dart' as tz;
 import 'package:admin_web/providers/auth_provider.dart';
 import 'package:admin_web/providers/prayer_times_provider.dart';
 import 'package:admin_web/providers/announcements_provider.dart';
@@ -976,7 +977,6 @@ class _DashboardHomeState extends State<DashboardHome> {
     final hasPrayerTimes = prayerTimes.prayerSettings != null;
     final activeAnnouncements =
         announcements.announcements.where((a) => a.active).length;
-    final totalAnnouncements = announcements.announcements.length;
 
     return Container(
       padding: const EdgeInsets.all(14),
@@ -1207,7 +1207,8 @@ class _DashboardHomeState extends State<DashboardHome> {
       };
     }
 
-    final now = _currentTime;
+    // Always use the latest masjid time from the provider (timezone-aware)
+    final now = prayerTimes.masjidNow;
     final prayerOrder = ['Fajr', 'Dhuhr', 'Asr', 'Maghrib', 'Isha'];
 
     // Build prayer times map for display
@@ -1227,7 +1228,7 @@ class _DashboardHomeState extends State<DashboardHome> {
       final pt = settings.prayerTimes[name];
       if (pt == null) continue;
 
-      final prayerDateTime = _parseTimeToToday(pt.adhan);
+      final prayerDateTime = _parseTimeToToday(pt.adhan, now);
       if (prayerDateTime != null && prayerDateTime.isAfter(now)) {
         nextPrayerName = name;
         nextPrayerTime = prayerDateTime;
@@ -1240,7 +1241,7 @@ class _DashboardHomeState extends State<DashboardHome> {
       final fajr = settings.prayerTimes['Fajr'];
       if (fajr != null) {
         nextPrayerName = 'Fajr';
-        final fajrTime = _parseTimeToToday(fajr.adhan);
+        final fajrTime = _parseTimeToToday(fajr.adhan, now);
         if (fajrTime != null) {
           nextPrayerTime = fajrTime.add(const Duration(days: 1));
         }
@@ -1276,14 +1277,27 @@ class _DashboardHomeState extends State<DashboardHome> {
     };
   }
 
-  DateTime? _parseTimeToToday(String time24h) {
+  DateTime? _parseTimeToToday(String time24h, DateTime now) {
     try {
       final parts = time24h.split(':');
       if (parts.length >= 2) {
         final hour = int.parse(parts[0]);
         final minute = int.parse(parts[1]);
-        final now = _currentTime;
-        return DateTime(now.year, now.month, now.day, hour, minute);
+        
+        // Create a DateTime in the same date and timezone context as the provided 'now'
+        final naiveDt = DateTime(now.year, now.month, now.day, hour, minute);
+        
+        // If now is a TZDateTime, try to create a matching TZDateTime for consistency
+        if (now is tz.TZDateTime) {
+          try {
+            final location = now.location;
+            return tz.TZDateTime(location, now.year, now.month, now.day, hour, minute);
+          } catch (_) {
+            return naiveDt;
+          }
+        }
+        
+        return naiveDt;
       }
     } catch (e) {
       debugPrint('Error parsing time: $e');

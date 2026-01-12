@@ -683,12 +683,9 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
                 final settings = provider.prayerSettings;
                 final method = settings?.calculationSettings.method ?? '--';
                 final iqamahMode = _iqamahModeLabel(settings);
-                final jumuah1 = (settings?.jumuahTimes.isNotEmpty ?? false)
+                final jumuah = (settings?.jumuahTimes.isNotEmpty ?? false)
                     ? settings!.jumuahTimes.first
                     : '--';
-                final jumuah2 = (settings?.jumuahTimes.length ?? 0) > 1
-                    ? settings!.jumuahTimes[1]
-                    : jumuah1;
 
                 final special = settings?.specialTimes ?? const SpecialTimes();
 
@@ -713,28 +710,14 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
                       child: SettingsSummaryCard(
                         title: 'Jumuah times',
                         description: null,
-                        body: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              jumuah1,
-                              style: const TextStyle(
-                                color: AdminTheme.textPrimary,
-                                fontSize: 26,
-                                fontWeight: FontWeight.w800,
-                                letterSpacing: -0.6,
-                              ),
-                            ),
-                            const SizedBox(height: 2),
-                            Text(
-                              jumuah2,
-                              style: TextStyle(
-                                color: Colors.grey.shade600,
-                                fontSize: 16,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ],
+                        body: Text(
+                          jumuah,
+                          style: const TextStyle(
+                            color: AdminTheme.textPrimary,
+                            fontSize: 26,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: -0.6,
+                          ),
                         ),
                         leftLabel: '',
                         leftValue: '',
@@ -1105,19 +1088,30 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
   }
 
   Widget _buildAthanAutomatic(PrayerTimesProvider provider) {
+    return _AthanAutomaticSection(provider: provider);
+  }
+
+  Widget _buildAthanAutomatic_deprecated(PrayerTimesProvider provider) {
     final settings = provider.prayerSettings;
     final current = settings?.calculationSettings ?? CalculationSettings();
-
-    String selectedMethod = current.method;
-    String selectedAsr = current.asrMethod;
-    String selectedHighLat = current.highLatitudeRule;
 
     final methods = PrayerApiService.getCalculationMethods();
     final asrOptions = const ['Shafi', 'Hanafi'];
     final highLatOptions = const ['AngleBased', 'Midnight', 'OneSeventh'];
 
+    // Use a mutable state holder to persist values across rebuilds
+    final stateHolder = <String, String>{
+      'selectedMethod': current.method,
+      'selectedAsr': current.asrMethod,
+      'selectedHighLat': current.highLatitudeRule,
+    };
+
     return StatefulBuilder(
       builder: (context, setState) {
+        String selectedMethod = stateHolder['selectedMethod'] ?? current.method;
+        String selectedAsr = stateHolder['selectedAsr'] ?? current.asrMethod;
+        String selectedHighLat = stateHolder['selectedHighLat'] ?? current.highLatitudeRule;
+
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -1146,21 +1140,21 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
               title: 'Calculation method',
               value: selectedMethod,
               items: methods,
-              onChanged: (value) => setState(() => selectedMethod = value),
+              onChanged: (value) => setState(() => stateHolder['selectedMethod'] = value),
             ),
             const SizedBox(height: 14),
             _LabeledDropdown(
               title: 'Asr according to the school',
               value: selectedAsr,
               items: asrOptions,
-              onChanged: (value) => setState(() => selectedAsr = value),
+              onChanged: (value) => setState(() => stateHolder['selectedAsr'] = value),
             ),
             const SizedBox(height: 14),
             _LabeledDropdown(
               title: 'High latitude rule',
               value: selectedHighLat,
               items: highLatOptions,
-              onChanged: (value) => setState(() => selectedHighLat = value),
+              onChanged: (value) => setState(() => stateHolder['selectedHighLat'] = value),
               helperText:
                   'Used to set a minimum time for Fajr and a max time for Isha',
             ),
@@ -1175,63 +1169,81 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
               child: _buildLocationSettings(provider),
             ),
             const SizedBox(height: 16),
-            SizedBox(
-              height: 48,
-              child: ElevatedButton(
-                onPressed: provider.isCalculating
-                    ? null
-                    : () async {
-                        // Save settings first
-                        final newSettings = current.copyWith(
-                          method: selectedMethod,
-                          asrMethod: selectedAsr,
-                          highLatitudeRule: selectedHighLat,
-                          useAutoCalculation: true,
-                        );
-                        await provider.updateCalculationSettings(newSettings);
-
-                        // Now auto-calculate prayer times
-                        final location = provider.prayerSettings?.location;
-                        if (location != null &&
-                            ((location.city.isNotEmpty &&
-                                    location.country.isNotEmpty) ||
-                                (location.latitude != 0.0 &&
-                                    location.longitude != 0.0))) {
-                          await provider.calculatePrayerTimes();
-                        }
-
-                        if (!mounted) return;
-                        if (provider.errorMessage == null) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: const Text(
-                                  'Prayer times calculated and saved!'),
-                              backgroundColor: AdminTheme.accentEmerald,
-                              behavior: SnackBarBehavior.floating,
-                              shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(8)),
-                            ),
-                          );
-                          Navigator.of(context).pop();
-                        }
-                      },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AdminTheme.accentEmerald,
-                  foregroundColor: Colors.white,
-                  elevation: 0,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12)),
-                ),
-                child: provider.isCalculating
-                    ? const SizedBox(
-                        width: 24,
-                        height: 24,
-                        child: CircularProgressIndicator(
-                            color: Colors.white, strokeWidth: 2),
-                      )
-                    : const Text('Calculate & Save Prayer Times',
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.grey[300],
+                      foregroundColor: Colors.black87,
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                    ),
+                    child: const Text('Cancel',
                         style: TextStyle(fontWeight: FontWeight.w700)),
-              ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: provider.isCalculating
+                        ? null
+                        : () async {
+                            // Save settings first
+                            final newSettings = current.copyWith(
+                              method: selectedMethod,
+                              asrMethod: selectedAsr,
+                              highLatitudeRule: selectedHighLat,
+                              useAutoCalculation: true,
+                            );
+                            await provider.updateCalculationSettings(newSettings);
+
+                            // Now auto-calculate prayer times
+                            final location = provider.prayerSettings?.location;
+                            if (location != null &&
+                                ((location.city.isNotEmpty &&
+                                        location.country.isNotEmpty) ||
+                                    (location.latitude != 0.0 &&
+                                        location.longitude != 0.0))) {
+                              await provider.calculatePrayerTimes();
+                            }
+
+                            if (!mounted) return;
+                            if (provider.errorMessage == null) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: const Text(
+                                      'Prayer times calculated and saved!'),
+                                  backgroundColor: AdminTheme.accentEmerald,
+                                  behavior: SnackBarBehavior.floating,
+                                  shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(8)),
+                                ),
+                              );
+                              Navigator.of(context).pop();
+                            }
+                          },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AdminTheme.accentEmerald,
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                    ),
+                    child: provider.isCalculating
+                        ? const SizedBox(
+                            width: 24,
+                            height: 24,
+                            child: CircularProgressIndicator(
+                                color: Colors.white, strokeWidth: 2),
+                          )
+                        : const Text('Calculate & Save Prayer Times',
+                            style: TextStyle(fontWeight: FontWeight.w700)),
+                  ),
+                ),
+              ],
             ),
           ],
         );
@@ -1411,55 +1423,116 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
             ),
           );
         }),
+        const SizedBox(height: 18),
+        Row(
+          children: [
+            Expanded(
+              child: ElevatedButton(
+                onPressed: () => Navigator.of(context).pop(),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.grey[300],
+                  foregroundColor: Colors.black87,
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                ),
+                child: const Text('Cancel',
+                    style: TextStyle(fontWeight: FontWeight.w700)),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: ElevatedButton(
+                onPressed: () async {
+                  final settings = provider.prayerSettings;
+                  if (settings == null) return;
+
+                  final updatedPrayerTimes =
+                      Map<String, PrayerTime>.from(settings.prayerTimes);
+                  final updatedUseDelay = <String, bool>{};
+
+                  for (final prayer in settings.prayerTimes.keys) {
+                    final useDelay = _useDelayControllers[prayer] ??
+                        (settings.iqamahUseDelay[prayer] ?? true);
+                    updatedUseDelay[prayer] = useDelay;
+
+                    final existing = updatedPrayerTimes[prayer];
+                    if (existing == null) continue;
+
+                    if (useDelay) {
+                      final delayCtrl = _delayControllers[prayer];
+                      final delayMinutes =
+                          int.tryParse(delayCtrl?.text.trim() ?? '');
+                      updatedPrayerTimes[prayer] = existing.copyWith(
+                        delay: delayMinutes ?? existing.delay,
+                      );
+                    } else {
+                      final iqamahCtrl = _iqamahControllers[prayer];
+                      updatedPrayerTimes[prayer] = existing.copyWith(
+                        iqamah: (iqamahCtrl?.text ?? '').trim(),
+                      );
+                    }
+                  }
+
+                  await provider.savePrayerTimesBulk(
+                    prayerTimes: updatedPrayerTimes,
+                    iqamahUseDelay: updatedUseDelay,
+                  );
+
+                  if (!mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: const Text('Iqamah times saved successfully'),
+                      backgroundColor: AdminTheme.accentEmerald,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      behavior: SnackBarBehavior.floating,
+                    ),
+                  );
+                  Navigator.of(context).pop();
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AdminTheme.accentEmerald,
+                  foregroundColor: Colors.white,
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                ),
+                child: const Text('Save Iqamah Settings',
+                    style: TextStyle(fontWeight: FontWeight.w700)),
+              ),
+            ),
+          ],
+        ),
       ],
     );
   }
 
   Widget _buildJumuahEditor(PrayerTimesProvider provider) {
     final times =
-        provider.prayerSettings?.jumuahTimes ?? const ['13:30', '13:30'];
-    final first =
+        provider.prayerSettings?.jumuahTimes ?? const ['13:30'];
+    final jumuahController =
         TextEditingController(text: times.isNotEmpty ? times.first : '13:30');
-    final second = TextEditingController(
-        text: times.length > 1
-            ? times[1]
-            : (times.isNotEmpty ? times.first : '13:30'));
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const Text(
-          'Set your Jumuah prayer times:',
+          'Set your Jumuah prayer time:',
           style: TextStyle(
               fontSize: 16,
               fontWeight: FontWeight.w700,
               color: AdminTheme.textPrimary),
         ),
         const SizedBox(height: 14),
-        Row(
-          children: [
-            Expanded(
-              child: TextField(
-                controller: first,
-                decoration: const InputDecoration(
-                  labelText: 'First Jumuah',
-                  hintText: 'HH:MM',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-            ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: TextField(
-                controller: second,
-                decoration: const InputDecoration(
-                  labelText: 'Second Jumuah',
-                  hintText: 'HH:MM',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-            ),
-          ],
+        TextField(
+          controller: jumuahController,
+          decoration: const InputDecoration(
+            labelText: 'Jumuah Time',
+            hintText: 'HH:MM',
+            border: OutlineInputBorder(),
+          ),
         ),
         const SizedBox(height: 16),
         SizedBox(
@@ -1467,7 +1540,7 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
           child: ElevatedButton(
             onPressed: () async {
               await provider
-                  .updateJumuahTimes([first.text.trim(), second.text.trim()]);
+                  .updateJumuahTimes([jumuahController.text.trim()]);
               if (!mounted) return;
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
@@ -2879,8 +2952,15 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
                 ),
               ),
               child: Row(
-                mainAxisAlignment: MainAxisAlignment.end,
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text(
+                      'Cancel',
+                      style: TextStyle(color: AdminTheme.textPrimary),
+                    ),
+                  ),
                   ElevatedButton(
                     onPressed: () async {
                       final settings = provider.prayerSettings;
@@ -2929,6 +3009,7 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
                           behavior: SnackBarBehavior.floating,
                         ),
                       );
+                      Navigator.of(context).pop();
                     },
                     style: ElevatedButton.styleFrom(
                       backgroundColor: AdminTheme.primaryBlueLight,
@@ -3079,7 +3160,7 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
             _buildDropdownSetting(
               title: 'High Latitude Rule',
               value: provider
-                      .prayerSettings?.calculationSettings.adjustmentMethod ??
+                      .prayerSettings?.calculationSettings.highLatitudeRule ??
                   'AngleBased',
               options: const [
                 DropdownMenuItem(value: 'Midnight', child: Text('Midnight')),
@@ -3092,7 +3173,7 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
                 if (value != null && provider.prayerSettings != null) {
                   final newSettings = provider
                       .prayerSettings!.calculationSettings
-                      .copyWith(adjustmentMethod: value);
+                      .copyWith(highLatitudeRule: value);
                   await provider.updateCalculationSettings(newSettings);
                 }
               },
@@ -4192,5 +4273,510 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
   String _capitalizeFirst(String text) {
     if (text.isEmpty) return text;
     return text[0].toUpperCase() + text.substring(1);
+  }
+}
+
+// Separate StatefulWidget for Athan Automatic section to properly manage state
+class _AthanAutomaticSection extends StatefulWidget {
+  final PrayerTimesProvider provider;
+
+  const _AthanAutomaticSection({required this.provider});
+
+  @override
+  State<_AthanAutomaticSection> createState() => _AthanAutomaticSectionState();
+}
+
+class _AthanAutomaticSectionState extends State<_AthanAutomaticSection> {
+  late String selectedMethod;
+  late String selectedAsr;
+  late String selectedHighLat;
+
+  @override
+  void initState() {
+    super.initState();
+    final current = widget.provider.prayerSettings?.calculationSettings ?? CalculationSettings();
+    selectedMethod = current.method;
+    selectedAsr = current.asrMethod;
+    selectedHighLat = current.highLatitudeRule;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final current = widget.provider.prayerSettings?.calculationSettings ?? CalculationSettings();
+    final methods = PrayerApiService.getCalculationMethods();
+    final asrOptions = const ['Shafi', 'Hanafi'];
+    final highLatOptions = const ['AngleBased', 'Midnight', 'OneSeventh'];
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Colors.grey.shade50,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: Colors.grey.shade200),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.info_outline, color: Colors.grey.shade600),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'You can choose a calculation method for the prayer times. You can also choose the custom method and define your own calculation parameters.',
+                  style: TextStyle(color: Colors.grey.shade700),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 18),
+        _LabeledDropdown(
+          title: 'Calculation method',
+          value: selectedMethod,
+          items: methods,
+          onChanged: (value) => setState(() => selectedMethod = value),
+        ),
+        const SizedBox(height: 14),
+        _LabeledDropdown(
+          title: 'Asr according to the school',
+          value: selectedAsr,
+          items: asrOptions,
+          onChanged: (value) => setState(() => selectedAsr = value),
+        ),
+        const SizedBox(height: 14),
+        _LabeledDropdown(
+          title: 'High latitude rule',
+          value: selectedHighLat,
+          items: highLatOptions,
+          onChanged: (value) => setState(() => selectedHighLat = value),
+          helperText: 'Used to set a minimum time for Fajr and a max time for Isha',
+        ),
+        const SizedBox(height: 18),
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Colors.grey.shade50,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: Colors.grey.shade200),
+          ),
+          child: _buildLocationSettingsWidget(widget.provider),
+        ),
+        const SizedBox(height: 16),
+        Row(
+          children: [
+            Expanded(
+              child: ElevatedButton(
+                onPressed: () => Navigator.of(context).pop(),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.grey[300],
+                  foregroundColor: Colors.black87,
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                ),
+                child: const Text('Cancel',
+                    style: TextStyle(fontWeight: FontWeight.w700)),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: ElevatedButton(
+                onPressed: widget.provider.isCalculating
+                    ? null
+                    : () async {
+                        final newSettings = current.copyWith(
+                          method: selectedMethod,
+                          asrMethod: selectedAsr,
+                          highLatitudeRule: selectedHighLat,
+                          useAutoCalculation: true,
+                        );
+                        await widget.provider.updateCalculationSettings(newSettings);
+
+                        final location = widget.provider.prayerSettings?.location;
+                        if (location != null &&
+                            ((location.city.isNotEmpty &&
+                                    location.country.isNotEmpty) ||
+                                (location.latitude != 0.0 &&
+                                    location.longitude != 0.0))) {
+                          await widget.provider.calculatePrayerTimes();
+                        }
+
+                        if (!mounted) return;
+                        if (widget.provider.errorMessage == null) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: const Text(
+                                  'Prayer times calculated and saved!'),
+                              backgroundColor: AdminTheme.accentEmerald,
+                              behavior: SnackBarBehavior.floating,
+                              shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(8)),
+                            ),
+                          );
+                          Navigator.of(context).pop();
+                        }
+                      },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AdminTheme.accentEmerald,
+                  foregroundColor: Colors.white,
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                ),
+                child: widget.provider.isCalculating
+                    ? const SizedBox(
+                        width: 24,
+                        height: 24,
+                        child: CircularProgressIndicator(
+                            color: Colors.white, strokeWidth: 2),
+                      )
+                    : const Text('Calculate & Save Prayer Times',
+                        style: TextStyle(fontWeight: FontWeight.w700)),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildLocationSettingsWidget(PrayerTimesProvider provider) {
+    // Common cities for autocomplete
+    final commonCities = [
+      'New York',
+      'Los Angeles',
+      'Chicago',
+      'Houston',
+      'Phoenix',
+      'London',
+      'Birmingham',
+      'Manchester',
+      'Leeds',
+      'Glasgow',
+      'Toronto',
+      'Montreal',
+      'Vancouver',
+      'Calgary',
+      'Ottawa',
+      'Dubai',
+      'Abu Dhabi',
+      'Sharjah',
+      'Riyadh',
+      'Jeddah',
+      'Mecca',
+      'Medina',
+      'Cairo',
+      'Alexandria',
+      'Paris',
+      'Berlin',
+      'Madrid',
+      'Barcelona',
+      'Rome',
+      'Milan',
+      'Sydney',
+      'Melbourne',
+      'Brisbane',
+      'Perth',
+      'Auckland',
+    ];
+
+    final commonCountries = [
+      'United States',
+      'United Kingdom',
+      'Canada',
+      'Australia',
+      'United Arab Emirates',
+      'Saudi Arabia',
+      'Egypt',
+      'France',
+      'Germany',
+      'Spain',
+      'Italy',
+      'Netherlands',
+      'Belgium',
+      'Switzerland',
+      'Austria',
+      'Sweden',
+      'Norway',
+      'Denmark',
+      'Finland',
+      'Poland',
+      'India',
+      'Pakistan',
+      'Bangladesh',
+      'Malaysia',
+      'Indonesia',
+      'Singapore',
+      'Thailand',
+      'Vietnam',
+      'Philippines',
+      'Japan',
+      'South Korea',
+      'China',
+      'Turkey',
+      'Iran',
+      'Iraq',
+      'Jordan',
+      'Lebanon',
+      'Palestine',
+      'Israel',
+      'South Africa',
+      'Nigeria',
+      'Kenya',
+      'Ethiopia',
+      'Morocco',
+      'Tunisia',
+      'Algeria',
+      'Libya',
+      'Sudan',
+      'Brazil',
+      'Mexico',
+      'Argentina',
+      'Colombia',
+      'Peru',
+      'Chile',
+      'New Zealand',
+    ];
+
+    final location = provider.prayerSettings?.location;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          'Location Settings',
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+            color: Colors.grey.shade700,
+          ),
+        ),
+        const SizedBox(height: 12),
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text('Country',
+                style: TextStyle(fontSize: 12, color: Color.fromARGB(255, 108, 117, 125))),
+            const SizedBox(height: 6),
+            Autocomplete<String>(
+              optionsBuilder: (TextEditingValue textEditingValue) {
+                if (textEditingValue.text.isEmpty) {
+                  return commonCountries;
+                }
+                return commonCountries.where((country) =>
+                    country.toLowerCase().contains(textEditingValue.text.toLowerCase()));
+              },
+              onSelected: (String selection) async {
+                final newLocation =
+                  location?.copyWith(country: selection)
+                  ?? LocationSettings(
+                    country: selection,
+                    city: '',
+                    latitude: 0.0,
+                    longitude: 0.0,
+                    );
+                await provider.updateLocationSettings(newLocation);
+              },
+              fieldViewBuilder: (context, textEditingController, focusNode, onFieldSubmitted) {
+                return TextField(
+                  controller: textEditingController,
+                  focusNode: focusNode,
+                  onChanged: (value) {
+                    if (value.isEmpty) {
+                      if (location != null) {
+                        provider.updateLocationSettings(location.copyWith(country: ''));
+                      }
+                    }
+                  },
+                  decoration: InputDecoration(
+                    hintText: location?.country ?? 'Select a country',
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide(color: Colors.grey.shade300),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide(color: Colors.grey.shade300),
+                    ),
+                  ),
+                );
+              },
+              optionsViewBuilder: (context, onSelected, options) {
+                return Material(
+                  elevation: 4,
+                  child: ListView(
+                    children: options
+                        .map((option) => Material(
+                              child: InkWell(
+                                onTap: () => onSelected(option),
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 16, vertical: 10),
+                                  child: Text(option),
+                                ),
+                              ),
+                            ))
+                        .toList(),
+                  ),
+                );
+              },
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text('Search by City',
+                style: TextStyle(fontSize: 12, color: Color.fromARGB(255, 108, 117, 125))),
+            const SizedBox(height: 6),
+            Autocomplete<String>(
+              optionsBuilder: (TextEditingValue textEditingValue) {
+                if (textEditingValue.text.isEmpty) {
+                  return commonCities;
+                }
+                return commonCities.where((city) =>
+                    city.toLowerCase().contains(textEditingValue.text.toLowerCase()));
+              },
+              onSelected: (String selection) async {
+                final newLocation =
+                  location?.copyWith(city: selection)
+                  ?? LocationSettings(
+                    city: selection,
+                    country: '',
+                    latitude: 0.0,
+                    longitude: 0.0,
+                  );
+                await provider.updateLocationSettings(newLocation);
+              },
+              fieldViewBuilder: (context, textEditingController, focusNode, onFieldSubmitted) {
+                return TextField(
+                  controller: textEditingController,
+                  focusNode: focusNode,
+                  onChanged: (value) {
+                    if (value.isEmpty) {
+                      if (location != null) {
+                        provider.updateLocationSettings(location.copyWith(city: ''));
+                      }
+                    }
+                  },
+                  decoration: InputDecoration(
+                    hintText: location?.city ?? 'Select a city',
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide(color: Colors.grey.shade300),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide(color: Colors.grey.shade300),
+                    ),
+                  ),
+                );
+              },
+              optionsViewBuilder: (context, onSelected, options) {
+                return Material(
+                  elevation: 4,
+                  child: ListView(
+                    children: options
+                        .map((option) => Material(
+                              child: InkWell(
+                                onTap: () => onSelected(option),
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 16, vertical: 10),
+                                  child: Text(option),
+                                ),
+                              ),
+                            ))
+                        .toList(),
+                  ),
+                );
+              },
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Text(
+          'OR',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Text('Latitude',
+                      style: TextStyle(
+                          fontSize: 12, color: Color.fromARGB(255, 108, 117, 125))),
+                  const SizedBox(height: 6),
+                  TextField(
+                    controller: TextEditingController(text: location?.latitude.toString() ?? ''),
+                    keyboardType: TextInputType.number,
+                    onChanged: (value) async {
+                      final lat = double.tryParse(value);
+                      if (lat != null && location != null) {
+                        final newLocation = location.copyWith(latitude: lat);
+                        await provider.updateLocationSettings(newLocation);
+                      }
+                    },
+                    decoration: InputDecoration(
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: BorderSide(color: Colors.grey.shade300),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: BorderSide(color: Colors.grey.shade300),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Text('Longitude',
+                      style: TextStyle(
+                          fontSize: 12, color: Color.fromARGB(255, 108, 117, 125))),
+                  const SizedBox(height: 6),
+                  TextField(
+                    controller: TextEditingController(text: location?.longitude.toString() ?? ''),
+                    keyboardType: TextInputType.number,
+                    onChanged: (value) async {
+                      final lon = double.tryParse(value);
+                      if (lon != null && location != null) {
+                        final newLocation = location.copyWith(longitude: lon);
+                        await provider.updateLocationSettings(newLocation);
+                      }
+                    },
+                    decoration: InputDecoration(
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: BorderSide(color: Colors.grey.shade300),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: BorderSide(color: Colors.grey.shade300),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
   }
 }

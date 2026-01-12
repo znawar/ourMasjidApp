@@ -106,10 +106,6 @@ class TimezoneService {
   static String? guessTimezoneFromCountry(String country) {
     var c = country.trim().toLowerCase();
 
-    // Normalise common variants and abbreviations so that
-    // values like "Aus" or "Australia (AU)" still resolve
-    // to a valid timezone instead of falling back to the
-    // device's local clock.
     if (c.isEmpty) {
       return null;
     }

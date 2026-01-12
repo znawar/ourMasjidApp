@@ -58,9 +58,7 @@ class PrayerTimesProvider with ChangeNotifier {
       // Determine timezone ID – prefer explicit IANA ID stored in settings.
       String tzId = (loc.timezone).trim();
 
-      // Special-case Adelaide when timezone is not explicitly set.
-      // Australia has multiple timezones; if the city name clearly
-      // indicates Adelaide, prefer the correct IANA zone.
+
       if (tzId.isEmpty || tzId.toLowerCase() == 'auto') {
         final city = (loc.city).trim().toLowerCase();
 
@@ -358,7 +356,7 @@ class PrayerTimesProvider with ChangeNotifier {
           longitude: _prayerSettings!.location.longitude,
           method: _prayerSettings!.calculationSettings.method,
           school: _prayerSettings!.calculationSettings.asrMethod,
-          adjustmentMethod: _prayerSettings!.calculationSettings.adjustmentMethod,
+          adjustmentMethod: _prayerSettings!.calculationSettings.highLatitudeRule,
           adjustment: _prayerSettings!.calculationSettings.adjustmentMinutes,
         );
       } else {
@@ -369,7 +367,7 @@ class PrayerTimesProvider with ChangeNotifier {
           country: _prayerSettings!.location.country,
           method: _prayerSettings!.calculationSettings.method,
           school: _prayerSettings!.calculationSettings.asrMethod,
-          adjustmentMethod: _prayerSettings!.calculationSettings.adjustmentMethod,
+          adjustmentMethod: _prayerSettings!.calculationSettings.highLatitudeRule,
           adjustment: _prayerSettings!.calculationSettings.adjustmentMinutes,
         );
       }
@@ -516,10 +514,7 @@ class PrayerTimesProvider with ChangeNotifier {
       }
 
       // If we still don't have a concrete timezone, fall back to
-      // a best-effort guess based on the country name. This ensures
-      // that simply selecting "Australia" (for example) gives an
-      // Australian timezone instead of leaving it as "Auto" and
-      // using the device's local clock.
+      // a best-effort guess based on the country name. 
       if (effectiveLocation.timezone.isEmpty ||
           effectiveLocation.timezone.toLowerCase() == 'auto') {
         final guess = TimezoneService.guessTimezoneFromCountry(effectiveLocation.country);
