@@ -64,7 +64,7 @@ class _TvDisplayScreenState extends State<TvDisplayScreen> {
       final ref = FirebaseFirestore.instance.collection('tv_pairs').doc(code);
       final snap = await ref.get();
 
-      final data = snap.data() as Map<String, dynamic>?;
+      final data = snap.data();
       final existingMasjidId = (data?['masjidId'] ?? '').toString().trim();
       if (existingMasjidId.isNotEmpty && existingMasjidId != masjidId.trim()) {
         if (!context.mounted) return;

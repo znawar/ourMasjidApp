@@ -623,8 +623,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final auth = Provider.of<AuthProvider>(context);
-
     return SingleChildScrollView(
       padding: const EdgeInsets.all(20),
       child: Column(

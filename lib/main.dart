@@ -8,9 +8,17 @@ import './providers/announcements_provider.dart';
 import './screens/login_screen.dart';
 import './screens/admin_dashboard.dart';
 import './utils/admin_theme.dart';
+import 'package:timezone/data/latest.dart' as tz_data;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Initialize timezone database early
+  try {
+    tz_data.initializeTimeZones();
+  } catch (e) {
+    debugPrint('Timezone initialization failed: $e');
+  }
 
   // Initialize Firebase with proper error handling
   try {

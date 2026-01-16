@@ -7,7 +7,6 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:timezone/timezone.dart' as tz;
 import 'package:timezone/data/latest.dart' as tz_data;
-import 'package:http/http.dart' as http;
 import 'tv_connection_screen.dart';
 import 'package:provider/provider.dart';
 import '../providers/prayer_times_provider.dart';
@@ -130,6 +129,7 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
   bool _timezoneResolved = false;
   
   // Masjid-local time derived from timezone; no external time API needed
+  String? _iqamahBackgroundImageUrl;
 
   late FirebaseFirestore firestore;
   StreamSubscription? _announcementsSub;
@@ -187,8 +187,51 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
 
       _listenToAnnouncements();
       _listenToPrayerTimes();
+      _fetchIqamahBackgroundImage();
     } catch (e) {
       print('Firebase initialization error: $e');
+    }
+  }
+
+  Future<void> _fetchIqamahBackgroundImage() async {
+    try {
+      debugPrint('🔄 Starting to fetch iqamah background image...');
+      
+      // Try to fetch from global settings first
+      final settingsDoc = await firestore.collection('settings').doc('app_config').get();
+      if (settingsDoc.exists) {
+        final imageBase64 = settingsDoc.data()?['iqamahBackgroundImage'] as String?;
+        if (imageBase64 != null && imageBase64.isNotEmpty) {
+          if (mounted) {
+            setState(() {
+              _iqamahBackgroundImageUrl = imageBase64;
+            });
+          }
+          debugPrint('✅ Loaded iqamah background image from settings (${imageBase64.length} chars)');
+          return;
+        }
+      }
+      
+      // Fallback: try to fetch from specific masjid document if available
+      if (_resolvedMasjidId != null) {
+        final masjidDoc = await firestore.collection('masjids').doc(_resolvedMasjidId).get();
+        if (masjidDoc.exists) {
+          final imageBase64 = masjidDoc.data()?['iqamahBackgroundImage'] as String?;
+          if (imageBase64 != null && imageBase64.isNotEmpty) {
+            if (mounted) {
+              setState(() {
+                _iqamahBackgroundImageUrl = imageBase64;
+              });
+            }
+            debugPrint('✅ Loaded iqamah background image from masjid document (${imageBase64.length} chars)');
+            return;
+          }
+        }
+      }
+      
+      debugPrint('⚠️ No iqamah background image found in Firestore');
+    } catch (e) {
+      debugPrint('❌ Error fetching iqamah background image: $e');
     }
   }
 
@@ -429,7 +472,10 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
       // 1) Prefer coordinate-based lookup when we have lat/lng; this
       // gives us the exact city timezone (including Adelaide, etc.).
       if (hasCoords) {
-        tzId = await _getTimezoneFromLatLng(_masjidLatitude!, _masjidLongitude!);
+        final res = await TimezoneService.getTimezoneFromFreeService(_masjidLatitude!, _masjidLongitude!);
+        if (res != null) {
+          tzId = res.timezoneId;
+        }
       }
 
       // 2) If that failed, try a simple city/country map with
@@ -437,12 +483,12 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
       if ((tzId == null || tzId.isEmpty) && hasCityOrCountry) {
         final city = _masjidCity?.trim() ?? '';
         final country = _masjidCountry?.trim() ?? '';
-        tzId = _getSimpleTimezoneFromCityCountry(city, country);
+        tzId = await _getSimpleTimezoneFromCityCountry(city, country);
       }
 
       // 3) As a last resort, fall back to a country-level guess.
       if ((tzId == null || tzId.isEmpty) && _masjidCountry != null && _masjidCountry!.trim().isNotEmpty) {
-        tzId = TimezoneService.guessTimezoneFromCountry(_masjidCountry!.trim());
+        tzId = await TimezoneService.guessTimezoneFromCountry(_masjidCountry!.trim());
       }
 
       if (tzId != null && tzId.isNotEmpty) {
@@ -522,61 +568,15 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
   }
   */
 
-  Future<String?> _getTimezoneFromLatLng(double lat, double lng) async {
-    try {
-      // Try timeapi.io which provides timezone by coordinates without an API key
-      final url = 'https://timeapi.io/api/TimeZone/coordinate?latitude=$lat&longitude=$lng';
-      final resp = await http.get(Uri.parse(url));
-      if (resp.statusCode == 200) {
-        final Map<String, dynamic> data = json.decode(resp.body);
-        // timeapi.io returns 'timeZone' or 'timeZoneId' depending on version
-        if (data['timeZone'] is String && (data['timeZone'] as String).isNotEmpty) {
-          return data['timeZone'] as String;
-        }
-        if (data['timeZoneName'] is String && (data['timeZoneName'] as String).isNotEmpty) {
-          return data['timeZoneName'] as String;
-        }
-        if (data['timeZoneId'] is String && (data['timeZoneId'] as String).isNotEmpty) {
-          return data['timeZoneId'] as String;
-        }
-      }
-    } catch (e) {
-      print('Lat/Lng timezone lookup failed: $e');
-    }
-    return null;
-  }
-
-  String _getSimpleTimezoneFromCityCountry(String city, String country) {
-    // Simple fallback for common cities
-    final cityLower = city.toLowerCase();
-    const timezoneMap = {
-      
-      'sydney': 'Australia/Sydney',
-      'adelaide': 'Australia/Adelaide',
-      'riyadh': 'Asia/Riyadh',
-      'jeddah': 'Asia/Riyadh',
-      'dubai': 'Asia/Dubai',
-      'abu dhabi': 'Asia/Dubai',
-      'karachi': 'Asia/Karachi',
-      'lahore': 'Asia/Karachi',
-      'delhi': 'Asia/Kolkata',
-      'mumbai': 'Asia/Kolkata',
-      'dhaka': 'Asia/Dhaka',
-      'istanbul': 'Europe/Istanbul',
-      'cairo': 'Africa/Cairo',
-      'jakarta': 'Asia/Jakarta',
-      'kuala lumpur': 'Asia/Kuala_Lumpur',
-      'london': 'Europe/London',
-      'new york': 'America/New_York',
-      'los angeles': 'America/Los_Angeles',
-      'chicago': 'America/Chicago',
-    };
-    
-    if (timezoneMap.containsKey(cityLower)) {
-      return timezoneMap[cityLower]!;
+  Future<String> _getSimpleTimezoneFromCityCountry(String city, String country) async {
+    // Use the same timezone service API that the provider uses
+    // This ensures consistency across the app
+    final guess = await TimezoneService.guessTimezoneFromCountry(country);
+    if (guess != null && guess.isNotEmpty) {
+      return guess;
     }
     
-    // Default to UTC
+    // If country guess fails, default to UTC
     return 'UTC';
   }
 
@@ -592,10 +592,38 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
       try {
         final location = tz.getLocation(_timezoneName!);
         _masjidLocalTime = tz.TZDateTime.now(location);
-        print('TV local time update -> tz: $_timezoneName, masjidLocal: $_masjidLocalTime, device: ${DateTime.now()}');
       } catch (e) {
-        print('Unknown timezone "$_timezoneName" – falling back to device time: $e');
-        _masjidLocalTime = DateTime.now();
+        // Fallback for Etc/GMT or UTC+XX:XX format
+        if (_timezoneName!.startsWith('Etc/GMT') || _timezoneName!.startsWith('UTC')) {
+          final match = RegExp(r"(?:Etc/GMT|UTC)([+-])(\d{1,2})(?::(\d{2}))?").firstMatch(_timezoneName!);
+          if (match != null) {
+            final signStr = match.group(1);
+            final hours = int.tryParse(match.group(2) ?? '0') ?? 0;
+            final minutes = int.tryParse(match.group(3) ?? '0') ?? 0;
+            
+            int offsetSeconds = (hours * 3600) + (minutes * 60);
+            
+            bool shouldAdd = false;
+            if (_timezoneName!.startsWith('UTC')) {
+              shouldAdd = (signStr == '+');
+            } else {
+              // Etc/GMT-5 is UTC+5, so '-' means add.
+              shouldAdd = (signStr == '-');
+            }
+            
+            final totalOffset = shouldAdd ? offsetSeconds : -offsetSeconds;
+            
+            // Create a temporary timezone location for the manual offset
+            final customTz = tz.TimeZone(totalOffset, isDst: false, abbreviation: 'LMT');
+            final customLocation = tz.Location(_timezoneName!, [0], [0], [customTz]);
+            _masjidLocalTime = tz.TZDateTime.now(customLocation);
+          } else {
+            _masjidLocalTime = DateTime.now();
+          }
+        } else {
+          print('Unknown timezone "$_timezoneName" – falling back to device time: $e');
+          _masjidLocalTime = DateTime.now();
+        }
       }
     } catch (e) {
       print('Error updating local time: $e');
@@ -768,6 +796,55 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
     super.dispose();
   }
 
+  /// Builds an ImageProvider from base64 Firestore data or asset path
+  /// - If imageData starts with "data:", decodes as base64 MemoryImage
+  /// - Otherwise treats as asset path and loads AssetImage
+  ImageProvider _buildImageProvider(String? imageData) {
+    try {
+      debugPrint('🔍 _buildImageProvider called with imageData: ${imageData?.substring(0, 50)}...');
+      
+      if (imageData == null || imageData.isEmpty) {
+        debugPrint('⚠️ No image data provided, using solid color');
+        return AssetImage('assets/images/iqamah_background.jpg');
+      }
+      
+      // Check if this is a base64 data URI (e.g., from Firestore)
+      if (imageData.startsWith('data:')) {
+        debugPrint('✅ Detected base64 data URI format');
+        // Extract base64 portion after "data:image/...;base64,"
+        final parts = imageData.split(',');
+        if (parts.length < 2) {
+          debugPrint('❌ Invalid base64 data URI format - missing comma');
+          return AssetImage('assets/images/iqamah_background.jpg');
+        }
+        
+        final base64String = parts.last.trim();
+        if (base64String.isEmpty) {
+          debugPrint('❌ Base64 string is empty after splitting');
+          return AssetImage('assets/images/iqamah_background.jpg');
+        }
+        
+        debugPrint('📦 Decoding base64 string of length: ${base64String.length}');
+        final decodedBytes = base64Decode(base64String);
+        if (decodedBytes.isEmpty) {
+          debugPrint('❌ Decoded image bytes are empty');
+          return AssetImage('assets/images/iqamah_background.jpg');
+        }
+        
+        debugPrint('✅ Successfully decoded ${decodedBytes.length} bytes to MemoryImage');
+        return MemoryImage(decodedBytes);
+      } else {
+        debugPrint('ℹ️ Treating as asset path: $imageData');
+        // Treat as asset path
+        return AssetImage(imageData);
+      }
+    } catch (e) {
+      debugPrint('❌ Error building image provider: $e');
+      // Fallback to asset image
+      return AssetImage('assets/images/iqamah_background.jpg');
+    }
+  }
+
   void _startClock() {
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
       // Always drive the TV clock from the masjid-local timezone
@@ -796,7 +873,13 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
     iqamahCountdown = Duration.zero;
     showIqamahStarted = false;
 
-    if (source.isEmpty) return;
+    if (source.isEmpty) {
+      debugPrint('⚠️ No prayer times available');
+      return;
+    }
+
+    debugPrint('🔍 Checking prayer times. Current time: $now');
+    debugPrint('📋 Available prayers: ${source.keys.toList()}');
 
     // Determine the current prayer as the latest adhan that has occurred
     // (including yesterday's times for after-midnight cases).
@@ -863,14 +946,17 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
     // If we're outside the active window, do not show any
     // "current prayer in progress" state.
     if (now.isBefore(windowStart) || now.isAfter(windowEnd)) {
+      debugPrint('⏰ Outside prayer window. Start: $windowStart, End: $windowEnd, Now: $now');
       _iqamahTimer?.cancel();
       return;
     }
 
     currentPrayerName = latestPrayerName;
+    debugPrint('✅ In prayer window for $latestPrayerName. Window: $windowStart to $windowEnd');
 
     // No iqamah configured: treat the whole window as generic adhan time.
     if (iqamahTime == null || iqamahStr.isEmpty || iqamahStr == '--:--') {
+      debugPrint('ℹ️ No iqamah time. Treating as generic adhan time.');
       isAdhanTime = true;
       isIqamahTime = false;
       showIqamahStarted = false;
@@ -1427,6 +1513,13 @@ Widget _buildGelPrayerButtons() {
   );
 }  
   Widget _buildAdhanIqamahDisplay() {
+  debugPrint('🎬 Building Adhan/Iqamah Display');
+  debugPrint('  isAdhanTime: $isAdhanTime');
+  debugPrint('  isIqamahTime: $isIqamahTime');
+  debugPrint('  showIqamahStarted: $showIqamahStarted');
+  debugPrint('  currentPrayerName: $currentPrayerName');
+  debugPrint('  iqamahCountdown: $iqamahCountdown');
+  
   final size = MediaQuery.of(context).size;
   final scale = (size.height / 1080.0).clamp(0.7, 1.4);
   
@@ -1434,40 +1527,108 @@ Widget _buildGelPrayerButtons() {
   if (showIqamahStarted && isIqamahTime) {
     return Stack(
       children: [
+        // Background color fallback
         Container(
-          color: Colors.black,
-          child: Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(
-                  Icons.mosque,
-                  size: 120 * scale,
-                  color: Colors.green,
-                ),
-                SizedBox(height: 40 * scale),
-                Text(
-                  '$currentPrayerName PRAYER HAS STARTED',
-                  style: TextStyle(
-                    fontSize: 48 * scale,
-                    fontWeight: FontWeight.w900,
-                    color: Colors.green,
-                    fontFamily: 'Roboto',
-                    letterSpacing: 2,
-                  ),
-                ),
-                SizedBox(height: 20 * scale),
-                Text(
-                  'IQAMAH HAS BEEN CALLED',
-                  style: TextStyle(
-                    fontSize: 28 * scale,
-                    fontWeight: FontWeight.w700,
-                    color: Colors.white,
-                    fontFamily: 'Roboto',
-                  ),
-                ),
-              ],
+          color: Colors.grey.shade900,
+        ),
+        // Background image - from Firestore (base64) or fallback to asset
+        if (_iqamahBackgroundImageUrl != null && _iqamahBackgroundImageUrl!.isNotEmpty)
+          Container(
+            decoration: BoxDecoration(
+              image: DecorationImage(
+                image: _buildImageProvider(_iqamahBackgroundImageUrl),
+                fit: BoxFit.cover,
+              ),
             ),
+          ),
+        // White-Blue gradient overlay
+        Container(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [
+                Colors.white.withOpacity(0.15),
+                Colors.blue.withOpacity(0.15),
+              ],
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+            ),
+          ),
+        ),
+        // Content
+        Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                Icons.mosque,
+                size: 140 * scale,
+                color: Colors.green,
+                shadows: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.7),
+                    blurRadius: 10,
+                    offset: Offset(2, 2),
+                  ),
+                ],
+              ),
+              SizedBox(height: 50 * scale),
+              RichText(
+                textAlign: TextAlign.center,
+                text: TextSpan(
+                  children: [
+                    TextSpan(
+                      text: 'Prayer for ',
+                      style: TextStyle(
+                        fontSize: 56 * scale,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.white,
+                        fontFamily: 'Roboto',
+                        shadows: [
+                          Shadow(
+                            blurRadius: 4,
+                            color: Colors.black.withOpacity(0.7),
+                            offset: Offset(2, 2),
+                          ),
+                        ],
+                      ),
+                    ),
+                    TextSpan(
+                      text: currentPrayerName,
+                      style: TextStyle(
+                        fontSize: 56 * scale,
+                        fontWeight: FontWeight.w900,
+                        color: Colors.green,
+                        fontFamily: 'Roboto',
+                        letterSpacing: 1,
+                        shadows: [
+                          Shadow(
+                            blurRadius: 4,
+                            color: Colors.black.withOpacity(0.7),
+                            offset: Offset(2, 2),
+                          ),
+                        ],
+                      ),
+                    ),
+                    TextSpan(
+                      text: ' in',
+                      style: TextStyle(
+                        fontSize: 56 * scale,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.white,
+                        fontFamily: 'Roboto',
+                        shadows: [
+                          Shadow(
+                            blurRadius: 4,
+                            color: Colors.black.withOpacity(0.7),
+                            offset: Offset(2, 2),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ),
         ),
         _buildGelPrayerButtons(),
@@ -1479,93 +1640,166 @@ Widget _buildGelPrayerButtons() {
   if (isAdhanTime && !isIqamahTime && iqamahCountdown.inSeconds > 0) {
     return Stack(
       children: [
+        // Background color fallback
         Container(
-          decoration: const BoxDecoration(
+          color: Colors.grey.shade900,
+        ),
+        // Background image - from Firestore (base64) or fallback to asset
+        if (_iqamahBackgroundImageUrl != null && _iqamahBackgroundImageUrl!.isNotEmpty)
+          Container(
+            decoration: BoxDecoration(
+              image: DecorationImage(
+                image: _buildImageProvider(_iqamahBackgroundImageUrl),
+                fit: BoxFit.cover,
+              ),
+            ),
+          ),
+        // White-Blue gradient overlay
+        Container(
+          decoration: BoxDecoration(
             gradient: LinearGradient(
               colors: [
-                Colors.white,
-                Color.fromARGB(255, 62, 185, 97),
+                Colors.white.withOpacity(0.15),
+                Colors.blue.withOpacity(0.15),
               ],
               begin: Alignment.topCenter,
               end: Alignment.bottomCenter,
             ),
           ),
-          child: Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(
-                  Icons.access_time_filled,
-                  size: 120 * scale,
+        ),
+        // Content
+        Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                'Prayer for',
+                style: TextStyle(
+                  fontSize: 44 * scale,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.white,
+                  fontFamily: 'Roboto',
+                  shadows: [
+                    Shadow(
+                      blurRadius: 4,
+                      color: Colors.black.withOpacity(0.7),
+                      offset: Offset(2, 2),
+                    ),
+                  ],
+                ),
+              ),
+              SizedBox(height: 12 * scale),
+              Text(
+                currentPrayerName,
+                style: TextStyle(
+                  fontSize: 80 * scale,
+                  fontWeight: FontWeight.w900,
                   color: Colors.amber,
+                  fontFamily: 'Roboto',
+                  letterSpacing: 2,
+                  shadows: [
+                    Shadow(
+                      blurRadius: 6,
+                      color: Colors.black.withOpacity(0.8),
+                      offset: Offset(2, 2),
+                    ),
+                  ],
                 ),
-                SizedBox(height: 40 * scale),
-                Text(
-                  'IQAMAH',
-                  style: TextStyle(
-                    fontSize: 80 * scale,
-                    fontWeight: FontWeight.w900,
-                    color: Colors.amber,
-                    fontFamily: 'Roboto',
-                    letterSpacing: 2,
-                  ),
+              ),
+              SizedBox(height: 50 * scale),
+              Container(
+                padding: EdgeInsets.symmetric(
+                  horizontal: 50 * scale,
+                  vertical: 40 * scale,
                 ),
-                SizedBox(height: 20 * scale),
-                Text(
-                  'For $currentPrayerName',
-                  style: TextStyle(
-                    fontSize: 40 * scale,
-                    fontWeight: FontWeight.w700,
-                    color: Colors.white,
-                    fontFamily: 'Roboto',
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      Colors.amber.withOpacity(0.3),
+                      Colors.orange.withOpacity(0.2),
+                    ],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
                   ),
+                  borderRadius: BorderRadius.circular(30 * scale),
+                  border: Border.all(
+                    color: Colors.amber.withOpacity(0.6),
+                    width: 3,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.amber.withOpacity(0.4),
+                      blurRadius: 20,
+                      spreadRadius: 5,
+                      offset: Offset(0, 10),
+                    ),
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.5),
+                      blurRadius: 15,
+                      offset: Offset(2, 4),
+                    ),
+                  ],
                 ),
-                SizedBox(height: 40 * scale),
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 30, vertical: 20),
-                  decoration: BoxDecoration(
-                    color: Colors.blue.withOpacity(0.2),
-                    borderRadius: BorderRadius.circular(15),
-                    border: Border.all(color: Colors.blue, width: 2),
-                  ),
-                  child: Column(
-                    children: [
-                      Text(
-                        'STARTS IN',
-                        style: TextStyle(
-                          fontSize: 24 * scale,
-                          fontWeight: FontWeight.w600,
-                          color: Colors.white,
-                          fontFamily: 'Roboto',
+                child: Column(
+                  children: [
+                    Text(
+                      'in',
+                      style: TextStyle(
+                        fontSize: 32 * scale,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.white,
+                        fontFamily: 'Roboto',
+                        letterSpacing: 3,
+                        shadows: [
+                          Shadow(
+                            blurRadius: 4,
+                            color: Colors.black.withOpacity(0.7),
+                            offset: Offset(1, 1),
+                          ),
+                        ],
+                      ),
+                    ),
+                    SizedBox(height: 20 * scale),
+                    Container(
+                      padding: EdgeInsets.symmetric(
+                        horizontal: 30 * scale,
+                        vertical: 15 * scale,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.amber.withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(15 * scale),
+                        border: Border.all(
+                          color: Colors.amber.withOpacity(0.5),
+                          width: 2,
                         ),
                       ),
-                      SizedBox(height: 15 * scale),
-                      Text(
+                      child: Text(
                         _formatDuration(iqamahCountdown),
                         style: TextStyle(
-                          fontSize: 64 * scale,
+                          fontSize: 96 * scale,
                           fontWeight: FontWeight.w900,
-                          color: Colors.white,
+                          color: Colors.amber,
                           fontFamily: 'RobotoMono',
-                          letterSpacing: 3,
+                          letterSpacing: 4,
+                          shadows: [
+                            Shadow(
+                              blurRadius: 8,
+                              color: Colors.black.withOpacity(0.8),
+                              offset: Offset(2, 2),
+                            ),
+                            Shadow(
+                              blurRadius: 4,
+                              color: Colors.amber.withOpacity(0.5),
+                              offset: Offset(-1, -1),
+                            ),
+                          ],
                         ),
                       ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
-                SizedBox(height: 30 * scale),
-                Text(
-                  'PLEASE PREPARE FOR PRAYER',
-                  style: TextStyle(
-                    fontSize: 20 * scale,
-                    fontWeight: FontWeight.w500,
-                    color: Colors.white.withOpacity(0.8),
-                    fontFamily: 'Roboto',
-                  ),
-                ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
         _buildGelPrayerButtons(),

@@ -1,0 +1,48 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    // Public read so TV + mobile can work without signing in.
+    match /masjids/{masjidId} {
+      allow read: if true;
+      allow create, update, delete: if signedIn() && request.auth.uid == masjidId;
+    }
+
+    // TV reads announcements without auth.
+    match /announcements/{announcementId} {
+      allow read: if true;
+      // Tighten later if you add per-masjid scoping.
+      allow create, update, delete: if signedIn();
+    }
+
+    // Pairing docs: TV generates code (unclaimed), admin claims it (sets masjidId + claimed=true).
+    // TV reads without auth; admin writes with auth.
+    match /tv_pairs/{code} {
+      // TV + admin can read pairing codes
+      allow read: if true;
+
+      // Unauthenticated TV can create initial unclaimed code with just 'code', 'claimed': false
+      allow create: if !signedIn()
+        && request.resource.data.code == code
+        && request.resource.data.claimed == false
+        && !('masjidId' in request.resource.data);
+
+      // Authenticated admin can claim (or re-claim for themselves)
+      allow update: if signedIn()
+        && request.resource.data.code == code
+        && request.resource.data.claimed == true
+        && request.resource.data.masjidId == request.auth.uid
+        && (
+          !('masjidId' in resource.data) 
+          || resource.data.masjidId == request.auth.uid
+        );
+
+      // Only signed-in admins can delete
+      allow delete: if signedIn() && resource.data.masjidId == request.auth.uid;
+    }
+  }
+}

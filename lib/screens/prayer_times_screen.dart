@@ -1,12 +1,16 @@
 import 'package:admin_web/providers/prayer_times_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:admin_web/providers/prayer_times_provider.dart';
 import 'package:admin_web/widgets/settings_summary_card.dart';
 import 'package:admin_web/models/prayer_settings_model.dart';
 import 'package:admin_web/services/prayer_api_service.dart';
 import 'package:admin_web/services/location_autocomplete_service.dart';
+import 'package:admin_web/services/timezone_service.dart';
 import 'dart:async';
+import 'dart:typed_data';
+import 'dart:convert';
+import 'package:image_picker_web/image_picker_web.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:admin_web/utils/admin_theme.dart';
 
 enum _PrayerWizardPage {
@@ -373,6 +377,453 @@ class _ToggleChoiceButton extends StatelessWidget {
   }
 }
 
+// Reusable Location Picker Widget to eliminate redundancy
+class LocationPickerWidget extends StatefulWidget {
+  final LocationSettings location;
+  final Function(LocationSettings) onLocationChanged;
+  final VoidCallback? onLocationResolved;
+
+  const LocationPickerWidget({
+    required this.location,
+    required this.onLocationChanged,
+    this.onLocationResolved,
+    super.key,
+  });
+
+  @override
+  State<LocationPickerWidget> createState() => _LocationPickerWidgetState();
+}
+
+class _LocationPickerWidgetState extends State<LocationPickerWidget> {
+  late TextEditingController _cityController;
+  late TextEditingController _countryController;
+  late TextEditingController _latitudeController;
+  late TextEditingController _longitudeController;
+  TextEditingController? _cityAutocompleteController;
+
+  List<String> _countries = [];
+  bool _loadingCountries = false;
+  List<String> _cityApiSuggestions = [];
+  bool _loadingCitySuggestions = false;
+  Timer? _cityDebounce;
+  Timer? _coordDebounce;
+
+  @override
+  void initState() {
+    super.initState();
+    _initializeControllers();
+    _loadCountries();
+  }
+
+  void _initializeControllers() {
+    _cityController = TextEditingController(text: widget.location.city);
+    _countryController = TextEditingController(text: widget.location.country);
+    _latitudeController = TextEditingController(text: widget.location.latitude != 0.0 ? widget.location.latitude.toString() : '');
+    _longitudeController = TextEditingController(text: widget.location.longitude != 0.0 ? widget.location.longitude.toString() : '');
+  }
+
+  Future<void> _loadCountries() async {
+    setState(() => _loadingCountries = true);
+    try {
+      final countries = await LocationAutocompleteService.getCountries();
+      if (mounted) {
+        setState(() {
+          _countries = countries;
+          _loadingCountries = false;
+        });
+      }
+    } catch (e) {
+      debugPrint('Error loading countries: $e');
+      if (mounted) {
+        setState(() => _loadingCountries = false);
+      }
+    }
+  }
+
+  void _searchCitiesDebounced(String query) {
+    _cityDebounce?.cancel();
+    if (query.isEmpty) {
+      if (mounted) {
+        setState(() {
+          _cityApiSuggestions = [];
+          _loadingCitySuggestions = false;
+        });
+      }
+      return;
+    }
+    _cityDebounce = Timer(const Duration(milliseconds: 500), () async {
+      if (!mounted) return;
+      setState(() => _loadingCitySuggestions = true);
+      try {
+        final currentCountry = _countryController.text.isEmpty ? null : _countryController.text;
+        final cities = await LocationAutocompleteService.searchCities(
+          query,
+          country: currentCountry,
+          limit: 20,
+        );
+        if (mounted) {
+          setState(() {
+            _cityApiSuggestions = cities;
+            _loadingCitySuggestions = false;
+          });
+          // Trigger the autocomplete dropdown to refresh with new data by re-assigning value
+          if (_cityAutocompleteController != null) {
+            _cityAutocompleteController!.value = _cityAutocompleteController!.value;
+          }
+        }
+      } catch (e) {
+        debugPrint('Error searching cities: $e');
+        if (mounted) {
+          setState(() => _loadingCitySuggestions = false);
+        }
+      }
+    });
+  }
+
+  void _onCoordinatesChangedDebounced() {
+    _coordDebounce?.cancel();
+    _coordDebounce = Timer(const Duration(milliseconds: 1000), () async {
+      final lat = double.tryParse(_latitudeController.text);
+      final lon = double.tryParse(_longitudeController.text);
+      
+      if (lat != null && lon != null) {
+        var newLocation = widget.location.copyWith(
+          latitude: lat,
+          longitude: lon,
+        );
+        
+        // Attempt to resolve timezone from coordinates
+        final tzResult = await TimezoneService.getTimezoneFromFreeService(lat, lon);
+        if (tzResult != null) {
+          newLocation = newLocation.copyWith(timezone: tzResult.timezoneId);
+        }
+        
+        widget.onLocationChanged(newLocation);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _cityDebounce?.cancel();
+    _coordDebounce?.cancel();
+    _cityController.dispose();
+    _countryController.dispose();
+    _latitudeController.dispose();
+    _longitudeController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          'Location Settings',
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+            color: Colors.grey.shade700,
+          ),
+        ),
+        const SizedBox(height: 16),
+        
+        // Country Input
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Country',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: Colors.grey.shade700,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Autocomplete<String>(
+              fieldViewBuilder: (context, textEditingController, focusNode, onFieldSubmitted) {
+                if (_countryController.text.isNotEmpty && textEditingController.text.isEmpty) {
+                  textEditingController.text = _countryController.text;
+                }
+                
+                return TextField(
+                  controller: textEditingController,
+                  focusNode: focusNode,
+                  decoration: InputDecoration(
+                    hintText: 'Select country',
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide(color: Colors.grey.shade300),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide(color: Colors.grey.shade300),
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    suffixIcon: _loadingCountries 
+                        ? Padding(
+                            padding: const EdgeInsets.all(12),
+                            child: SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            ),
+                          )
+                        : null,
+                  ),
+                  onChanged: (value) {
+                    _countryController.text = value;
+                    widget.onLocationChanged(widget.location.copyWith(country: value));
+                  },
+                );
+              },
+              optionsBuilder: (TextEditingValue textEditingValue) {
+                if (textEditingValue.text.isEmpty) {
+                  return _countries;
+                }
+                return _countries.where((country) =>
+                    country.toLowerCase().contains(textEditingValue.text.toLowerCase()));
+              },
+              onSelected: (String selection) {
+                _countryController.text = selection;
+                widget.onLocationChanged(widget.location.copyWith(country: selection));
+                setState(() => _cityApiSuggestions = []);
+                _cityController.text = '';
+              },
+              optionsViewBuilder: (context, onSelected, options) {
+                return Material(
+                  elevation: 4,
+                  child: SizedBox(
+                    height: 200,
+                    child: ListView.builder(
+                      itemCount: options.length,
+                      itemBuilder: (context, index) {
+                        final option = options.elementAt(index);
+                        return ListTile(
+                          title: Text(option),
+                          onTap: () => onSelected(option),
+                          dense: true,
+                        );
+                      },
+                    ),
+                  ),
+                );
+              },
+            ),
+          ],
+        ),
+        
+        const SizedBox(height: 16),
+        
+        // City Input
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'City',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: Colors.grey.shade700,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Autocomplete<String>(
+              fieldViewBuilder: (context, textEditingController, focusNode, onFieldSubmitted) {
+                _cityAutocompleteController = textEditingController;
+                if (_cityController.text.isNotEmpty && textEditingController.text.isEmpty) {
+                  textEditingController.text = _cityController.text;
+                }
+                
+                return TextField(
+                  controller: textEditingController,
+                  focusNode: focusNode,
+                  decoration: InputDecoration(
+                    hintText: 'Start typing city name...',
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide(color: Colors.grey.shade300),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide(color: Colors.grey.shade300),
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    suffixIcon: _loadingCitySuggestions 
+                        ? Padding(
+                            padding: const EdgeInsets.all(12),
+                            child: SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            ),
+                          )
+                        : null,
+                  ),
+                  onChanged: (value) {
+                    _cityController.text = value;
+                    _searchCitiesDebounced(value);
+                    widget.onLocationChanged(widget.location.copyWith(city: value));
+                  },
+                );
+              },
+              optionsBuilder: (TextEditingValue textEditingValue) {
+                if (textEditingValue.text.isEmpty) return const Iterable<String>.empty();
+                return _cityApiSuggestions;
+              },
+              onSelected: (String selection) async {
+                _cityController.text = selection.split(',').first.trim();
+                
+                final coords = await LocationAutocompleteService.resolveToCoordinates(
+                  selection,
+                  country: _countryController.text.isEmpty ? null : _countryController.text,
+                );
+                
+                var newLocation = widget.location.copyWith(city: _cityController.text);
+                
+                if (coords != null) {
+                  final lat = coords['lat'] ?? 0.0;
+                  final lon = coords['lon'] ?? 0.0;
+                  newLocation = newLocation.copyWith(
+                    latitude: lat,
+                    longitude: lon,
+                  );
+                  _latitudeController.text = lat.toString();
+                  _longitudeController.text = lon.toString();
+
+                  // Attempt to resolve timezone from coordinates
+                  final tzResult = await TimezoneService.getTimezoneFromFreeService(lat, lon);
+                  if (tzResult != null) {
+                    newLocation = newLocation.copyWith(timezone: tzResult.timezoneId);
+                  }
+                }
+                
+                widget.onLocationChanged(newLocation);
+                widget.onLocationResolved?.call();
+                
+                setState(() => _cityApiSuggestions = []);
+              },
+              optionsViewBuilder: (context, onSelected, options) {
+                if (options.isEmpty) {
+                  return const SizedBox.shrink();
+                }
+                
+                return Material(
+                  elevation: 4,
+                  child: SizedBox(
+                    height: 300,
+                    child: ListView.builder(
+                      padding: EdgeInsets.zero,
+                      itemCount: options.length,
+                      itemBuilder: (context, index) {
+                        final option = options.elementAt(index);
+                        return ListTile(
+                          title: Text(option),
+                          onTap: () => onSelected(option),
+                          dense: true,
+                        );
+                      },
+                    ),
+                  ),
+                );
+              },
+            ),
+          ],
+        ),
+        
+        const SizedBox(height: 16),
+        
+        Text(
+          'OR',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
+        ),
+        
+        const SizedBox(height: 16),
+        
+        // Latitude and Longitude
+        Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Latitude',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.grey.shade700,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  TextField(
+                    controller: _latitudeController,
+                    keyboardType: TextInputType.number,
+                    decoration: InputDecoration(
+                      hintText: 'e.g., -33.8688',
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: BorderSide(color: Colors.grey.shade300),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: BorderSide(color: Colors.grey.shade300),
+                      ),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    ),
+                    onChanged: (value) {
+                      _onCoordinatesChangedDebounced();
+                    },
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Longitude',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.grey.shade700,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  TextField(
+                    controller: _longitudeController,
+                    keyboardType: TextInputType.number,
+                    decoration: InputDecoration(
+                      hintText: 'e.g., 151.2093',
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: BorderSide(color: Colors.grey.shade300),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: BorderSide(color: Colors.grey.shade300),
+                      ),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    ),
+                    onChanged: (value) {
+                      _onCoordinatesChangedDebounced();
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
 class PrayerTimesScreen extends StatefulWidget {
   const PrayerTimesScreen({super.key});
 
@@ -417,135 +868,15 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
 
   DateTime? _lastSyncedLastUpdated;
 
-  // Location controllers
-  late TextEditingController _cityController;
-  late TextEditingController _countryController;
-  late TextEditingController _latitudeController;
-  late TextEditingController _longitudeController;
-
-  // Autocomplete state
-  List<String> _countries = [];
-  bool _loadingCountries = false;
-  List<String> _cityApiSuggestions = [];
-  bool _loadingCitySuggestions = false;
-  Timer? _cityDebounce;
-  bool _loadingCountryCities = false;
-  String? _selectedCountryForCache;
+  // Iqamah background image state
+  Uint8List? _selectedImageBytes;
+  bool _uploadingImage = false;
+  String? _previewImageBase64;
 
   @override
   void initState() {
     super.initState();
     _initializeControllers();
-    _initializeLocationControllers();
-  }
-
-  void _initializeLocationControllers() {
-    final provider = Provider.of<PrayerTimesProvider>(context, listen: false);
-
-    _cityController = TextEditingController(
-      text: provider.prayerSettings?.location.city ?? '',
-    );
-    _countryController = TextEditingController(
-      text: provider.prayerSettings?.location.country ?? '',
-    );
-    _latitudeController = TextEditingController(
-      text: (provider.prayerSettings?.location.latitude ?? 0.0) != 0.0
-          ? (provider.prayerSettings?.location.latitude ?? 0.0).toString()
-          : '',
-    );
-    _longitudeController = TextEditingController(
-      text: (provider.prayerSettings?.location.longitude ?? 0.0) != 0.0
-          ? (provider.prayerSettings?.location.longitude ?? 0.0).toString()
-          : '',
-    );
-
-    // Load countries list
-    _loadCountries();
-  }
-
-  Future<void> _loadCountries() async {
-    setState(() {
-      _loadingCountries = true;
-    });
-    try {
-      final list = await LocationAutocompleteService.getCountries();
-      setState(() {
-        _countries = list;
-      });
-    } catch (_) {}
-    setState(() {
-      _loadingCountries = false;
-    });
-  }
-
-  Future<void> _prefetchCountryCities(String country) async {
-    final trimmed = country.trim();
-    if (trimmed.isEmpty) return;
-    setState(() {
-      _loadingCountryCities = true;
-    });
-    try {
-      final list = await LocationAutocompleteService.getCitiesForCountry(trimmed);
-      setState(() {
-        _cityApiSuggestions = list.map((e) => (e['display'] ?? '').toString()).toList();
-        _selectedCountryForCache = trimmed.toLowerCase();
-      });
-      debugPrint('Prefetched ${_cityApiSuggestions.length} cities for $trimmed');
-    } catch (e) {
-      debugPrint('Prefetch country cities failed for $trimmed: $e');
-    }
-    setState(() {
-      _loadingCountryCities = false;
-    });
-  }
-
-  void _searchCitiesDebounced(String query) {
-    _cityDebounce?.cancel();
-    _cityDebounce = Timer(const Duration(milliseconds: 400), () async {
-      if (query.trim().isEmpty) {
-        setState(() => _cityApiSuggestions = []);
-        return;
-      }
-      setState(() => _loadingCitySuggestions = true);
-      final country = _countryController.text.trim();
-      debugPrint('City search: query="$query" country="$country"');
-
-      // If we have a prefetched list for this country, filter locally (instant)
-      try {
-        final key = country.trim().toLowerCase();
-        final cached = await LocationAutocompleteService.getCitiesForCountry(country);
-        if (cached.isNotEmpty) {
-          final q = query.toLowerCase();
-          final matches = cached.where((e) {
-            final display = (e['display'] ?? '').toString().toLowerCase();
-            return display.contains(q) || (e['name'] ?? '').toString().toLowerCase().contains(q);
-          }).map((e) => (e['display'] ?? '').toString()).toList();
-          setState(() {
-            _cityApiSuggestions = matches;
-            _loadingCitySuggestions = false;
-            _selectedCountryForCache = key;
-          });
-          debugPrint('Using cached city list for "$country" -> ${matches.length} matches');
-          return;
-        }
-      } catch (_) {}
-
-      // Otherwise fall back to live search
-      try {
-        final results = await LocationAutocompleteService.searchCities(query, country: country.isEmpty ? null : country, limit: 200);
-        debugPrint('City search results for "$query": ${results.length}');
-        setState(() {
-          _cityApiSuggestions = results;
-          _loadingCitySuggestions = false;
-        });
-      } catch (e) {
-        debugPrint('City search error for "$query": $e');
-        setState(() {
-          _cityApiSuggestions = [];
-          _loadingCitySuggestions = false;
-        });
-      }
-    });
   }
 
   void _initializeControllers() {
@@ -586,16 +917,6 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
           _useDelayControllers[prayer] =
               prayerSettings.iqamahUseDelay[prayer] ?? true;
         });
-
-        // Sync location controllers too.
-        _cityController.text = prayerSettings.location.city;
-        _countryController.text = prayerSettings.location.country;
-        _latitudeController.text = prayerSettings.location.latitude != 0.0
-            ? prayerSettings.location.latitude.toString()
-            : '';
-        _longitudeController.text = prayerSettings.location.longitude != 0.0
-            ? prayerSettings.location.longitude.toString()
-            : '';
       }
     } catch (e) {
       debugPrint('Error updating controllers: $e');
@@ -607,12 +928,80 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
     _adhanControllers.forEach((key, controller) => controller.dispose());
     _iqamahControllers.forEach((key, controller) => controller.dispose());
     _delayControllers.forEach((key, controller) => controller.dispose());
-    _cityController.dispose();
-    _countryController.dispose();
-    _latitudeController.dispose();
-    _longitudeController.dispose();
-    _cityDebounce?.cancel();
     super.dispose();
+  }
+
+  /// Pick an image file from the user's device and convert to base64
+  Future<void> _pickIqamahImage() async {
+    try {
+      final result = await ImagePickerWeb.getImageAsBytes();
+      if (result != null) {
+        final imageBase64 = 'data:image/jpeg;base64,${base64Encode(result)}';
+        setState(() {
+          _selectedImageBytes = result;
+          _previewImageBase64 = imageBase64;
+        });
+        debugPrint('✅ Image selected: ${result.length} bytes');
+      }
+    } catch (e) {
+      debugPrint('❌ Image picker error: $e');
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error selecting image: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  /// Save the selected image to Firestore as base64
+  Future<void> _saveIqamahImage(PrayerTimesProvider provider) async {
+    if (_previewImageBase64 == null || _previewImageBase64!.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please select an image first'),
+          backgroundColor: Colors.amber,
+        ),
+      );
+      return;
+    }
+
+    setState(() => _uploadingImage = true);
+
+    try {
+      // Save to Firestore under masjid document
+      final masjidId = provider.prayerSettings?.masjidId;
+      if (masjidId == null || masjidId.isEmpty) {
+        throw 'Masjid ID not found. Please save location first.';
+      }
+
+      await FirebaseFirestore.instance.collection('masjids').doc(masjidId).update({
+        'iqamahBackgroundImage': _previewImageBase64,
+      });
+
+      setState(() {
+        _uploadingImage = false;
+        _selectedImageBytes = null;
+      });
+
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('✅ Iqamah background image saved successfully'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } catch (e) {
+      setState(() => _uploadingImage = false);
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error saving image: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
   }
 
   @override
@@ -776,6 +1165,11 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
                           ),
                         ),
                       ),
+                    // Iqamah background image card
+                    SizedBox(
+                      width: cardWidth,
+                      child: _buildIqamahImageCard(provider),
+                    ),
                   ],
                 );
               },
@@ -791,6 +1185,161 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
       icon: Icons.access_time,
       title: 'Prayer Times',
       subtitle: 'Configure adhan calculations, iqamah settings, and location',
+    );
+  }
+
+  Widget _buildIqamahImageCard(PrayerTimesProvider provider) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.grey.shade200),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: AdminTheme.accentEmerald.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Icon(
+                    Icons.image_outlined,
+                    color: AdminTheme.accentEmerald,
+                    size: 22,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Iqamah Background Image',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                          color: AdminTheme.textPrimary,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        'Choose an image for the iqamah timer screens',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey.shade600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            // Image preview
+            if (_previewImageBase64 != null && _previewImageBase64!.isNotEmpty && _selectedImageBytes != null)
+              ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: SizedBox(
+                  height: 200,
+                  width: double.infinity,
+                  child: Image.memory(
+                    _selectedImageBytes!,
+                    fit: BoxFit.cover,
+                  ),
+                ),
+              )
+            else
+              Container(
+                height: 200,
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade100,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.grey.shade300, width: 2),
+                ),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.cloud_upload_outlined,
+                      size: 40,
+                      color: Colors.grey.shade400,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'No image selected',
+                      style: TextStyle(
+                        color: Colors.grey.shade600,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            const SizedBox(height: 16),
+            // Button group
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                ElevatedButton.icon(
+                  onPressed: _uploadingImage ? null : _pickIqamahImage,
+                  icon: const Icon(Icons.folder_open),
+                  label: const Text('Choose Image'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AdminTheme.primaryBlueLight,
+                    foregroundColor: Colors.white,
+                    disabledBackgroundColor: Colors.grey.shade300,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    elevation: 0,
+                  ),
+                ),
+                ElevatedButton.icon(
+                  onPressed: _uploadingImage || _previewImageBase64 == null
+                      ? null
+                      : () => _saveIqamahImage(provider),
+                  icon: _uploadingImage
+                      ? const SizedBox(
+                          height: 18,
+                          width: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor:
+                                AlwaysStoppedAnimation<Color>(Colors.white),
+                          ),
+                        )
+                      : const Icon(Icons.save),
+                  label: Text(_uploadingImage ? 'Saving...' : 'Save Image'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AdminTheme.accentEmerald,
+                    foregroundColor: Colors.white,
+                    disabledBackgroundColor: Colors.grey.shade300,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    elevation: 0,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -1300,7 +1849,20 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
                 borderRadius: BorderRadius.circular(14),
                 border: Border.all(color: Colors.grey.shade200),
               ),
-              child: _buildLocationSettings(provider),
+              child: LocationPickerWidget(
+                location: provider.prayerSettings?.location ?? LocationSettings(country: '', city: '', latitude: 0.0, longitude: 0.0),
+                onLocationChanged: (newLocation) async {
+                  await provider.updateLocationSettings(newLocation);
+                },
+                onLocationResolved: () async {
+                  final location = provider.prayerSettings?.location;
+                  if (location != null &&
+                      ((location.city.isNotEmpty && location.country.isNotEmpty) ||
+                          (location.latitude != 0.0 && location.longitude != 0.0))) {
+                    await provider.calculatePrayerTimes();
+                  }
+                },
+              ),
             ),
             const SizedBox(height: 16),
             Row(
@@ -3323,826 +3885,6 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
     );
   }
 
-  Widget _buildLocationSettings(PrayerTimesProvider provider) {
-    // Common cities for autocomplete
-    final commonCities = [
-      'New York',
-      'Los Angeles',
-      'Chicago',
-      'Houston',
-      'Phoenix',
-      'London',
-      'Birmingham',
-      'Manchester',
-      'Leeds',
-      'Glasgow',
-      'Toronto',
-      'Montreal',
-      'Vancouver',
-      'Calgary',
-      'Ottawa',
-      'Dubai',
-      'Abu Dhabi',
-      'Sharjah',
-      'Riyadh',
-      'Jeddah',
-      'Mecca',
-      'Medina',
-      'Cairo',
-      'Alexandria',
-      'Giza',
-      'Casablanca',
-      'Rabat',
-      'Karachi',
-      'Lahore',
-      'Islamabad',
-      'Dhaka',
-      'Chittagong',
-      'Jakarta',
-      'Kuala Lumpur',
-      'Singapore',
-      'Istanbul',
-      'Ankara',
-      'Paris',
-      'Berlin',
-      'Amsterdam',
-      'Brussels',
-      'Vienna',
-      'Sydney',
-      'Melbourne',
-      'Brisbane',
-      'Perth',
-      'Auckland',
-      'Mumbai',
-      'Delhi',
-      'Bangalore',
-      'Hyderabad',
-      'Chennai',
-    ];
-
-    final commonCountries = [
-      'USA',
-      'United States',
-      'UK',
-      'United Kingdom',
-      'Canada',
-      'Australia',
-      'UAE',
-      'United Arab Emirates',
-      'Saudi Arabia',
-      'Egypt',
-      'Morocco',
-      'Pakistan',
-      'Bangladesh',
-      'India',
-      'Indonesia',
-      'Malaysia',
-      'Singapore',
-      'Turkey',
-      'France',
-      'Germany',
-      'Netherlands',
-      'Belgium',
-      'Austria',
-      'South Africa',
-      'Nigeria',
-      'Kenya',
-      'New Zealand',
-    ];
-
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: Colors.grey.shade200),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 20,
-            offset: const Offset(0, 10),
-          ),
-        ],
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Container(
-                  width: 48,
-                  height: 48,
-                  decoration: BoxDecoration(
-                    color: AdminTheme.accentEmerald.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: const Icon(
-                    Icons.location_on_outlined,
-                    color: AdminTheme.accentEmerald,
-                    size: 24,
-                  ),
-                ),
-                const SizedBox(width: 16),
-                const Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Location Settings',
-                        style: TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.w700,
-                          color: AdminTheme.textPrimary,
-                        ),
-                      ),
-                      SizedBox(height: 4),
-                      Text(
-                        'Set your masjid location for accurate calculations',
-                        style: TextStyle(
-                          color: AdminTheme.textMuted,
-                          fontSize: 14,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 32),
-
-            // Country (left) and City (right) Row with Autocomplete.
-            // City suggestions are filtered based on the selected country.
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // Country first (left)
-                Expanded(
-                  child: _buildAutocompleteField(
-                    controller: _countryController,
-                    label: 'Country',
-                    hint: 'e.g., Australia',
-                    icon: Icons.public,
-                    suggestions: _countries.isNotEmpty ? _countries : commonCountries,
-                    suffixWidget: _loadingCountries ? Padding(padding: const EdgeInsets.all(10), child: SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))) : null,
-                    onChanged: (value) async {
-                      if (provider.prayerSettings != null) {
-                        final newLocation = provider.prayerSettings!.location.copyWith(country: value);
-                        await provider.updateLocationSettings(newLocation);
-
-                        // Clear city suggestions when country changes
-                        setState(() {
-                          _cityApiSuggestions = [];
-                          _loadingCountryCities = false;
-                          _selectedCountryForCache = null;
-                        });
-
-                        // Attempt to prefetch a full city list for this country (GeoNames) if available
-                        _prefetchCountryCities(value);
-
-                        // If current city likely not in new country, clear it
-                        final selectedCountry = value.trim();
-                        final cityList = _countryToCitiesMap()[selectedCountry.toLowerCase()];
-                        if (cityList != null && !_cityController.text.isEmpty) {
-                          final cityText = _cityController.text.trim();
-                          final found = cityList.any((c) => c.toLowerCase() == cityText.toLowerCase());
-                          if (!found) {
-                            _cityController.text = '';
-                            await provider.updateLocationSettings(newLocation.copyWith(city: ''));
-                          }
-                        }
-                      }
-                    },
-                  ),
-                ),
-                const SizedBox(width: 20),
-                // City input uses suggestions filtered by country
-                Expanded(
-                  child: Builder(builder: (context) {
-                    // compute suggestions based on API-backed results
-                    return Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'City',
-                          style: const TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w600,
-                            color: AdminTheme.textPrimary,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Autocomplete<String>(
-                          initialValue: TextEditingValue(text: _cityController.text),
-                          optionsBuilder: (textEditingValue) {
-                            final q = textEditingValue.text.trim();
-                            if (q.isEmpty) return const Iterable<String>.empty();
-
-                            // If we don't have API suggestions yet and user typed >=2 chars,
-                            // kick off a search proactively.
-                            if (!_loadingCitySuggestions && _cityApiSuggestions.isEmpty && q.length >= 2) {
-                              _searchCitiesDebounced(q);
-                            }
-
-                            final lowerQ = q.toLowerCase();
-
-                            // Local fallback: country -> city mappings
-                            final countryText = _countryController.text.trim().toLowerCase();
-                            final map = _countryToCitiesMap();
-                            List<String> local = [];
-                            if (countryText.isNotEmpty) {
-                              if (map.containsKey(countryText)) {
-                                local = map[countryText]!.where((c) => c.toLowerCase().contains(lowerQ)).toList();
-                              } else {
-                                final matchKey = map.keys.firstWhere((k) => k.contains(countryText) || countryText.contains(k), orElse: () => '');
-                                if (matchKey.isNotEmpty && map.containsKey(matchKey)) {
-                                  local = map[matchKey]!.where((c) => c.toLowerCase().contains(lowerQ)).toList();
-                                }
-                              }
-                            }
-
-                            final api = _cityApiSuggestions.where((o) => o.toLowerCase().contains(lowerQ)).toList();
-
-                            // Merge API results (prefer) with local fallback and dedupe
-                            final merged = <String>[];
-                            for (final s in api) {
-                              if (!merged.contains(s)) merged.add(s);
-                            }
-                            for (final s in local) {
-                              if (!merged.contains(s)) merged.add(s);
-                            }
-
-                            return merged;
-                          },
-                          onSelected: (selection) async {
-                            // Teleport/Nominatim/GeoNames return 'City, Region, Country' — extract city name and country
-                            final parts = selection.split(',').map((p) => p.trim()).toList();
-                            final cityName = parts.isNotEmpty ? parts.first : '';
-                            final countryName = parts.length > 1 ? parts.last : _countryController.text.trim();
-                            _cityController.text = cityName;
-                            _countryController.text = countryName;
-                            if (provider.prayerSettings != null) {
-                              double lat = 0.0;
-                              double lon = 0.0;
-                              try {
-                                // Try to resolve coordinates using cache or Nominatim fallback
-                                final coords = await LocationAutocompleteService.resolveToCoordinates(selection, country: countryName.isEmpty ? null : countryName);
-                                if (coords != null) {
-                                  lat = coords['lat']!;
-                                  lon = coords['lon']!;
-                                }
-                              } catch (e) {
-                                debugPrint('resolveToCoordinates error: $e');
-                              }
-
-                              final newLocation = provider.prayerSettings!.location.copyWith(city: cityName, country: countryName, latitude: lat, longitude: lon);
-                              await provider.updateLocationSettings(newLocation);
-                            }
-                          },
-                          fieldViewBuilder: (context, textController, focusNode, onFieldSubmitted) {
-                            if (_cityController.text.isNotEmpty && textController.text.isEmpty) {
-                              textController.text = _cityController.text;
-                            }
-                            return TextField(
-                              controller: textController,
-                              focusNode: focusNode,
-                              style: const TextStyle(fontSize: 15, color: AdminTheme.textPrimary),
-                              decoration: InputDecoration(
-                                hintText: 'e.g., New York',
-                                hintStyle: TextStyle(color: Colors.grey.shade400),
-                                border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                  borderSide: BorderSide(color: Colors.grey.shade300),
-                                ),
-                                enabledBorder: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                  borderSide: BorderSide(color: Colors.grey.shade300),
-                                ),
-                                focusedBorder: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                  borderSide: const BorderSide(color: AdminTheme.accentEmerald, width: 2),
-                                ),
-                                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-                                prefixIcon: Icon(Icons.location_city, color: Colors.grey.shade400, size: 20),
-                                suffixIcon: _loadingCitySuggestions ? Padding(padding: const EdgeInsets.all(12), child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))) : (_loadingCountryCities ? Padding(padding: const EdgeInsets.all(12), child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))) : null),
-                              ),
-                              onChanged: (value) {
-                                _cityController.text = value;
-                                // trigger API search
-                                if (value.trim().length >= 2) {
-                                  _searchCitiesDebounced(value.trim());
-                                } else {
-                                  setState(() => _cityApiSuggestions = []);
-                                }
-                                // still let provider update
-                                if (provider.prayerSettings != null) {
-                                  provider.updateLocationSettings(provider.prayerSettings!.location.copyWith(city: value));
-                                }
-                              },
-                            );
-                          },
-                          optionsViewBuilder: (context, onSelected, options) {
-                            return Align(
-                              alignment: Alignment.topLeft,
-                              child: Material(
-                                elevation: 4,
-                                borderRadius: BorderRadius.circular(12),
-                                child: ConstrainedBox(
-                                  constraints: const BoxConstraints(maxHeight: 200, maxWidth: 400),
-                                  child: Builder(builder: (ctx) {
-                                    if (_loadingCitySuggestions && options.isEmpty) {
-                                      return const Padding(
-                                        padding: EdgeInsets.all(12),
-                                        child: SizedBox(width: 200, child: Text('Searching...')),
-                                      );
-                                    }
-
-                                    if (!_loadingCitySuggestions && options.isEmpty) {
-                                      return const Padding(
-                                        padding: EdgeInsets.all(12),
-                                        child: SizedBox(width: 200, child: Text('No results')),
-                                      );
-                                    }
-
-                                    return ListView.builder(
-                                      padding: EdgeInsets.zero,
-                                      shrinkWrap: true,
-                                      itemCount: options.length,
-                                      itemBuilder: (context, index) {
-                                        final option = options.elementAt(index);
-                                        return ListTile(
-                                          title: Text(option),
-                                          onTap: () => onSelected(option),
-                                          dense: true,
-                                        );
-                                      },
-                                    );
-                                  }),
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-                      ],
-                    );
-                  }),
-                ),
-              ],
-            ),
-
-            const SizedBox(height: 24),
-
-            // Latitude and Longitude Row
-            Row(
-              children: [
-                Expanded(
-                  child: _buildLocationField(
-                    controller: _latitudeController,
-                    label: 'Latitude (Optional)',
-                    hint: 'e.g., 40.7128',
-                    icon: Icons.explore,
-                    keyboardType: TextInputType.number,
-                    onChanged: (value) async {
-                      if (provider.prayerSettings != null) {
-                        final latitude = double.tryParse(value) ?? 0.0;
-                        final newLocation = provider.prayerSettings!.location
-                            .copyWith(latitude: latitude);
-                        await provider.updateLocationSettings(newLocation);
-                      }
-                    },
-                  ),
-                ),
-                const SizedBox(width: 20),
-                Expanded(
-                  child: _buildLocationField(
-                    controller: _longitudeController,
-                    label: 'Longitude (Optional)',
-                    hint: 'e.g., -74.0060',
-                    icon: Icons.explore,
-                    keyboardType: TextInputType.number,
-                    onChanged: (value) async {
-                      if (provider.prayerSettings != null) {
-                        final longitude = double.tryParse(value) ?? 0.0;
-                        final newLocation = provider.prayerSettings!.location
-                            .copyWith(longitude: longitude);
-                        await provider.updateLocationSettings(newLocation);
-                      }
-                    },
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildAutocompleteField({
-    required TextEditingController controller,
-    required String label,
-    required String hint,
-    required IconData icon,
-    required List<String> suggestions,
-    required ValueChanged<String> onChanged,
-    Widget? suffixWidget,
-  }) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          label,
-          style: const TextStyle(
-            fontSize: 15,
-            fontWeight: FontWeight.w600,
-            color: AdminTheme.textPrimary,
-          ),
-        ),
-        const SizedBox(height: 8),
-        Autocomplete<String>(
-          initialValue: TextEditingValue(text: controller.text),
-          optionsBuilder: (textEditingValue) {
-            if (textEditingValue.text.isEmpty) {
-              return const Iterable<String>.empty();
-            }
-            return suggestions.where((option) => option
-                .toLowerCase()
-                .contains(textEditingValue.text.toLowerCase()));
-          },
-          onSelected: (selection) {
-            controller.text = selection;
-            onChanged(selection);
-          },
-          fieldViewBuilder:
-              (context, textController, focusNode, onFieldSubmitted) {
-            // Sync the external controller with autocomplete controller
-            if (controller.text.isNotEmpty && textController.text.isEmpty) {
-              textController.text = controller.text;
-            }
-            return TextField(
-              controller: textController,
-              focusNode: focusNode,
-              style:
-                  const TextStyle(fontSize: 15, color: AdminTheme.textPrimary),
-              decoration: InputDecoration(
-                hintText: hint,
-                hintStyle: TextStyle(color: Colors.grey.shade400),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide(color: Colors.grey.shade300),
-                ),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide(color: Colors.grey.shade300),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: const BorderSide(
-                      color: AdminTheme.accentEmerald, width: 2),
-                ),
-                contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-                prefixIcon: Icon(icon, color: Colors.grey.shade400, size: 20),
-                suffixIcon: suffixWidget,
-              ),
-              onChanged: (value) {
-                controller.text = value;
-                onChanged(value);
-              },
-            );
-          },
-          optionsViewBuilder: (context, onSelected, options) {
-            return Align(
-              alignment: Alignment.topLeft,
-              child: Material(
-                elevation: 4,
-                borderRadius: BorderRadius.circular(12),
-                child: ConstrainedBox(
-                  constraints:
-                      const BoxConstraints(maxHeight: 200, maxWidth: 300),
-                  child: ListView.builder(
-                    padding: EdgeInsets.zero,
-                    shrinkWrap: true,
-                    itemCount: options.length,
-                    itemBuilder: (context, index) {
-                      final option = options.elementAt(index);
-                      return ListTile(
-                        title: Text(option),
-                        onTap: () => onSelected(option),
-                        dense: true,
-                      );
-                    },
-                  ),
-                ),
-              ),
-            );
-          },
-        ),
-      ],
-    );
-  }
-
-  Widget _buildRecalculateSection(PrayerTimesProvider provider) {
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: Colors.grey.shade200),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 20,
-            offset: const Offset(0, 10),
-          ),
-        ],
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Container(
-                  width: 48,
-                  height: 48,
-                  decoration: BoxDecoration(
-                    color: AdminTheme.accentSkyBlue.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: const Icon(
-                    Icons.refresh,
-                    color: AdminTheme.accentSkyBlue,
-                    size: 24,
-                  ),
-                ),
-                const SizedBox(width: 16),
-                const Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Recalculate Prayer Times',
-                        style: TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.w700,
-                          color: AdminTheme.textPrimary,
-                        ),
-                      ),
-                      SizedBox(height: 4),
-                      Text(
-                        'Update prayer times based on your settings',
-                        style: TextStyle(
-                          color: AdminTheme.textMuted,
-                          fontSize: 14,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 32),
-
-            // Current Settings Info
-            Container(
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [
-                    AdminTheme.primaryBlueLight.withOpacity(0.05),
-                    AdminTheme.primaryBlue.withOpacity(0.05),
-                  ],
-                ),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(
-                    color: AdminTheme.primaryBlueLight.withOpacity(0.2)),
-              ),
-              child: Column(
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text(
-                        'Calculation Method:',
-                        style: TextStyle(
-                          fontWeight: FontWeight.w500,
-                          color: AdminTheme.textSubtle,
-                          fontSize: 14,
-                        ),
-                      ),
-                      Flexible(
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 6),
-                          decoration: BoxDecoration(
-                            color: AdminTheme.primaryBlueLight.withOpacity(0.1),
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: Text(
-                            provider.prayerSettings?.calculationSettings
-                                    .method ??
-                                'N/A',
-                            style: const TextStyle(
-                              fontWeight: FontWeight.w600,
-                              color: AdminTheme.primaryBlueLight,
-                              fontSize: 13,
-                            ),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text(
-                        'Location:',
-                        style: TextStyle(
-                          fontWeight: FontWeight.w500,
-                          color: AdminTheme.textSubtle,
-                          fontSize: 14,
-                        ),
-                      ),
-                      Flexible(
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 6),
-                          decoration: BoxDecoration(
-                            color: AdminTheme.accentEmerald.withOpacity(0.1),
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: Text(
-                            '${provider.prayerSettings?.location.city ?? 'N/A'}, ${provider.prayerSettings?.location.country ?? ''}',
-                            style: const TextStyle(
-                              fontWeight: FontWeight.w600,
-                              color: AdminTheme.accentEmerald,
-                              fontSize: 13,
-                            ),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-
-            const SizedBox(height: 32),
-
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton.icon(
-                onPressed: provider.isCalculating
-                    ? null
-                    : () async {
-                        if (provider.prayerSettings == null ||
-                            (provider.prayerSettings!.location.latitude ==
-                                    0.0 &&
-                                provider.prayerSettings!.location.longitude ==
-                                    0.0 &&
-                                provider
-                                    .prayerSettings!.location.city.isEmpty)) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: const Row(
-                                children: [
-                                  Icon(Icons.warning_amber,
-                                      color: Colors.white, size: 20),
-                                  SizedBox(width: 8),
-                                  Expanded(
-                                      child: Text(
-                                          'Location not set! Please set location first.')),
-                                ],
-                              ),
-                              backgroundColor: AdminTheme.accentRedLight,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              behavior: SnackBarBehavior.floating,
-                            ),
-                          );
-                          return;
-                        }
-
-                        try {
-                          await provider.calculatePrayerTimes();
-                          _updateControllers();
-                          setState(() {});
-
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: const Row(
-                                children: [
-                                  Icon(Icons.check_circle,
-                                      color: Colors.white, size: 20),
-                                  SizedBox(width: 8),
-                                  Expanded(
-                                      child: Text(
-                                          'Prayer times recalculated successfully!')),
-                                ],
-                              ),
-                              backgroundColor: AdminTheme.accentEmerald,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              behavior: SnackBarBehavior.floating,
-                            ),
-                          );
-                        } catch (e) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Row(
-                                children: [
-                                  const Icon(Icons.error_outline,
-                                      color: Colors.white, size: 20),
-                                  const SizedBox(width: 8),
-                                  Expanded(child: Text('Error: $e')),
-                                ],
-                              ),
-                              backgroundColor: AdminTheme.accentRedLight,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              behavior: SnackBarBehavior.floating,
-                            ),
-                          );
-                        }
-                      },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AdminTheme.primaryBlueLight,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 18),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  elevation: 0,
-                ),
-                icon: provider.isCalculating
-                    ? SizedBox(
-                        height: 20,
-                        width: 20,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          valueColor:
-                              AlwaysStoppedAnimation<Color>(Colors.white),
-                        ),
-                      )
-                    : const Icon(Icons.refresh, size: 20),
-                label: provider.isCalculating
-                    ? const Text('Calculating...')
-                    : const Text(
-                        'Recalculate Prayer Times',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // Returns a lowercase-keyed map of country -> common cities to be used
-  // for filtering city suggestions based on the selected country.
-  Map<String, List<String>> _countryToCitiesMap() {
-    return {
-      'usa': ['New York', 'Los Angeles', 'Chicago', 'Houston', 'Phoenix'],
-      'united states': ['New York', 'Los Angeles', 'Chicago', 'Houston', 'Phoenix'],
-      'uk': ['London', 'Birmingham', 'Manchester', 'Leeds', 'Glasgow'],
-      'united kingdom': ['London', 'Birmingham', 'Manchester', 'Leeds', 'Glasgow'],
-      'canada': ['Toronto', 'Montreal', 'Vancouver', 'Calgary', 'Ottawa'],
-      'australia': ['Sydney', 'Melbourne', 'Brisbane', 'Perth'],
-      'uae': ['Dubai', 'Abu Dhabi', 'Sharjah'],
-      'united arab emirates': ['Dubai', 'Abu Dhabi', 'Sharjah'],
-      'saudi arabia': ['Riyadh', 'Jeddah', 'Mecca', 'Medina'],
-      'egypt': ['Cairo', 'Alexandria', 'Giza'],
-      'morocco': ['Casablanca', 'Rabat'],
-      'pakistan': ['Karachi', 'Lahore', 'Islamabad'],
-      'bangladesh': ['Dhaka', 'Chittagong'],
-      'india': ['Mumbai', 'Delhi', 'Bangalore', 'Hyderabad', 'Chennai'],
-      'indonesia': ['Jakarta'],
-      'malaysia': ['Kuala Lumpur'],
-      'singapore': ['Singapore'],
-      'turkey': ['Istanbul', 'Ankara'],
-      'france': ['Paris'],
-      'germany': ['Berlin'],
-      'netherlands': ['Amsterdam'],
-      'belgium': ['Brussels'],
-      'austria': ['Vienna'],
-      'south africa': [],
-      'nigeria': [],
-      'kenya': [],
-      'new zealand': ['Auckland'],
-    };
-  }
-
   Widget _buildImportSection() {
     return Container(
       decoration: BoxDecoration(
@@ -4320,68 +4062,10 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
     );
   }
 
-  Widget _buildLocationField({
-    required TextEditingController controller,
-    required String label,
-    required String hint,
-    required IconData icon,
-    required ValueChanged<String> onChanged,
-    TextInputType keyboardType = TextInputType.text,
-  }) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          label,
-          style: const TextStyle(
-            fontSize: 15,
-            fontWeight: FontWeight.w600,
-            color: AdminTheme.textPrimary,
-          ),
-        ),
-        const SizedBox(height: 8),
-        TextField(
-          controller: controller,
-          keyboardType: keyboardType,
-          style: const TextStyle(
-            fontSize: 15,
-            color: AdminTheme.textPrimary,
-          ),
-          decoration: InputDecoration(
-            hintText: hint,
-            hintStyle: TextStyle(color: Colors.grey.shade400),
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
-              borderSide: BorderSide(color: Colors.grey.shade300),
-            ),
-            enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
-              borderSide: BorderSide(color: Colors.grey.shade300),
-            ),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
-              borderSide:
-                  const BorderSide(color: AdminTheme.accentEmerald, width: 2),
-            ),
-            contentPadding:
-                const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-            prefixIcon: Icon(
-              icon,
-              color: Colors.grey.shade400,
-              size: 20,
-            ),
-          ),
-          onChanged: onChanged,
-        ),
-      ],
-    );
-  }
-
   Color _getPrayerColor(String prayer) {
     switch (prayer.toLowerCase()) {
       case 'fajr':
         return AdminTheme.primaryBlue;
-      case 'dhuhr':
         return AdminTheme.accentSkyBlue;
       case 'asr':
         return AdminTheme.accentEmerald;
@@ -4428,6 +4112,7 @@ class _AthanAutomaticSection extends StatefulWidget {
 }
 
 class _AthanAutomaticSectionState extends State<_AthanAutomaticSection> {
+  _AthanAutomaticSectionState();
   late String selectedMethod;
   late String selectedAsr;
   late String selectedHighLat;
@@ -4443,31 +4128,9 @@ class _AthanAutomaticSectionState extends State<_AthanAutomaticSection> {
 
   Future<void> _updateLocationAndCalculate(LocationSettings newLocation) async {
     try {
-      // First update the location (this handles timezone resolution internally)
       await widget.provider.updateLocationSettings(newLocation);
-      
-      // Give the provider a moment to notify listeners and ensure timezone is resolved
-      await Future.delayed(const Duration(milliseconds: 100));
-      
-      // Ensure calculation settings are saved with current selections
-      final current = widget.provider.prayerSettings?.calculationSettings ?? CalculationSettings();
-      final newSettings = current.copyWith(
-        method: selectedMethod,
-        asrMethod: selectedAsr,
-        highLatitudeRule: selectedHighLat,
-        useAutoCalculation: true,
-      );
-      await widget.provider.updateCalculationSettings(newSettings);
-      
-      // Auto-calculate prayer times after location and settings are properly saved
-      final updatedLocation = widget.provider.prayerSettings?.location;
-      if (updatedLocation != null &&
-          ((updatedLocation.city.isNotEmpty && updatedLocation.country.isNotEmpty) ||
-              (updatedLocation.latitude != 0.0 && updatedLocation.longitude != 0.0))) {
-        await widget.provider.calculatePrayerTimes();
-      }
     } catch (e) {
-      debugPrint('Error updating location and calculating: $e');
+      debugPrint('Error updating location: $e');
     }
   }
 
@@ -4531,7 +4194,21 @@ class _AthanAutomaticSectionState extends State<_AthanAutomaticSection> {
             borderRadius: BorderRadius.circular(14),
             border: Border.all(color: Colors.grey.shade200),
           ),
-          child: _buildLocationSettingsWidget(widget.provider),
+          child: LocationPickerWidget(
+            location: widget.provider.prayerSettings?.location ?? LocationSettings(country: '', city: '', latitude: 0.0, longitude: 0.0),
+            onLocationChanged: (newLocation) async {
+              await _updateLocationAndCalculate(newLocation);
+            },
+            onLocationResolved: () async {
+              // Recalculate after location is resolved
+              final location = widget.provider.prayerSettings?.location;
+              if (location != null &&
+                  ((location.city.isNotEmpty && location.country.isNotEmpty) ||
+                      (location.latitude != 0.0 && location.longitude != 0.0))) {
+                await widget.provider.calculatePrayerTimes();
+              }
+            },
+          ),
         ),
         const SizedBox(height: 16),
         Row(
@@ -4604,377 +4281,6 @@ class _AthanAutomaticSectionState extends State<_AthanAutomaticSection> {
                       )
                     : const Text('Calculate & Save Prayer Times',
                         style: TextStyle(fontWeight: FontWeight.w700)),
-              ),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-
-  Widget _buildLocationSettingsWidget(PrayerTimesProvider provider) {
-    // Common cities for autocomplete
-    final commonCities = [
-      'New York',
-      'Los Angeles',
-      'Chicago',
-      'Dhaka',
-      'Karachi',
-      'Houston',
-      'Phoenix',
-      'London',
-      'Birmingham',
-      'Manchester',
-      'Leeds',
-      'Glasgow',
-      'Toronto',
-      'Montreal',
-      'Vancouver',
-      'Calgary',
-      'Ottawa',
-      'Dubai',
-      'Abu Dhabi',
-      'Sharjah',
-      'Riyadh',
-      'Jeddah',
-      'Mecca',
-      'Medina',
-      'Cairo',
-      'Alexandria',
-      'Paris',
-      'Berlin',
-      'Madrid',
-      'Barcelona',
-      'Rome',
-      'Milan',
-      'Sydney',
-      'Adelaide'
-      'Melbourne',
-      'Brisbane',
-      'Perth',
-      'Auckland',
-    ];
-
-    final commonCountries = [
-      'United States',
-      'United Kingdom',
-      'Canada',
-      'Australia',
-      'United Arab Emirates',
-      'Saudi Arabia',
-      'Egypt',
-      'France',
-      'Germany',
-      'Spain',
-      'Italy',
-      'Netherlands',
-      'Belgium',
-      'Switzerland',
-      'Austria',
-      'Sweden',
-      'Norway',
-      'Denmark',
-      'Finland',
-      'Poland',
-      'India',
-      'Pakistan',
-      'Bangladesh',
-      'Malaysia',
-      'Indonesia',
-      'Singapore',
-      'Thailand',
-      'Vietnam',
-      'Philippines',
-      'Japan',
-      'South Korea',
-      'China',
-      'Turkey',
-      'Iran',
-      'Iraq',
-      'Jordan',
-      'Lebanon',
-      'Palestine',
-      'Israel',
-      'South Africa',
-      'Nigeria',
-      'Kenya',
-      'Ethiopia',
-      'Morocco',
-      'Tunisia',
-      'Algeria',
-      'Libya',
-      'Sudan',
-      'Brazil',
-      'Mexico',
-      'Argentina',
-      'Colombia',
-      'Peru',
-      'Chile',
-      'New Zealand',
-    ];
-
-    final location = provider.prayerSettings?.location;
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Text(
-          'Location Settings',
-          style: TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-            color: Colors.grey.shade700,
-          ),
-        ),
-        const SizedBox(height: 12),
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const Text('Country',
-                style: TextStyle(fontSize: 12, color: Color.fromARGB(255, 108, 117, 125))),
-            const SizedBox(height: 6),
-            Autocomplete<String>(
-              optionsBuilder: (TextEditingValue textEditingValue) {
-                if (textEditingValue.text.isEmpty) {
-                  return commonCountries;
-                }
-                return commonCountries.where((country) =>
-                    country.toLowerCase().contains(textEditingValue.text.toLowerCase()));
-              },
-              onSelected: (String selection) async {
-                // Resolve country capital or major city to get coordinates
-                final coords = await LocationAutocompleteService.resolveToCoordinates(
-                  '',
-                  country: selection,
-                );
-                
-                var newLocation = location?.copyWith(country: selection)
-                    ?? LocationSettings(
-                      country: selection,
-                      city: '',
-                      latitude: 0.0,
-                      longitude: 0.0,
-                    );
-                
-                // If coordinates were resolved, update them
-                if (coords != null) {
-                  newLocation = newLocation.copyWith(
-                    latitude: coords['lat'] ?? 0.0,
-                    longitude: coords['lon'] ?? 0.0,
-                  );
-                }
-                
-                await _updateLocationAndCalculate(newLocation);
-              },
-              fieldViewBuilder: (context, textEditingController, focusNode, onFieldSubmitted) {
-                return TextField(
-                  controller: textEditingController,
-                  focusNode: focusNode,
-                  onChanged: (value) {
-                    if (value.isEmpty) {
-                      if (location != null) {
-                        _updateLocationAndCalculate(location.copyWith(country: ''));
-                      }
-                    }
-                  },
-                  decoration: InputDecoration(
-                    hintText: location?.country ?? 'Select a country',
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(8),
-                      borderSide: BorderSide(color: Colors.grey.shade300),
-                    ),
-                    enabledBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(8),
-                      borderSide: BorderSide(color: Colors.grey.shade300),
-                    ),
-                  ),
-                );
-              },
-              optionsViewBuilder: (context, onSelected, options) {
-                return Material(
-                  elevation: 4,
-                  child: ListView(
-                    children: options
-                        .map((option) => Material(
-                              child: InkWell(
-                                onTap: () => onSelected(option),
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 16, vertical: 10),
-                                  child: Text(option),
-                                ),
-                              ),
-                            ))
-                        .toList(),
-                  ),
-                );
-              },
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const Text('Search by City',
-                style: TextStyle(fontSize: 12, color: Color.fromARGB(255, 108, 117, 125))),
-            const SizedBox(height: 6),
-            Autocomplete<String>(
-              optionsBuilder: (TextEditingValue textEditingValue) {
-                if (textEditingValue.text.isEmpty) {
-                  return commonCities;
-                }
-                return commonCities.where((city) =>
-                    city.toLowerCase().contains(textEditingValue.text.toLowerCase()));
-              },
-              onSelected: (String selection) async {
-                // Resolve city coordinates using country if available
-                final currentCountry = location?.country ?? '';
-                final coords = await LocationAutocompleteService.resolveToCoordinates(
-                  selection,
-                  country: currentCountry.isNotEmpty ? currentCountry : null,
-                );
-                
-                var newLocation = location?.copyWith(city: selection)
-                    ?? LocationSettings(
-                      city: selection,
-                      country: currentCountry,
-                      latitude: 0.0,
-                      longitude: 0.0,
-                    );
-                
-                // If coordinates were resolved, update them
-                if (coords != null) {
-                  newLocation = newLocation.copyWith(
-                    latitude: coords['lat'] ?? 0.0,
-                    longitude: coords['lon'] ?? 0.0,
-                  );
-                }
-                
-                await _updateLocationAndCalculate(newLocation);
-              },
-              fieldViewBuilder: (context, textEditingController, focusNode, onFieldSubmitted) {
-                return TextField(
-                  controller: textEditingController,
-                  focusNode: focusNode,
-                  onChanged: (value) {
-                    if (value.isEmpty) {
-                      if (location != null) {
-                        _updateLocationAndCalculate(location.copyWith(city: ''));
-                      }
-                    }
-                  },
-                  decoration: InputDecoration(
-                    hintText: location?.city ?? 'Select a city',
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(8),
-                      borderSide: BorderSide(color: Colors.grey.shade300),
-                    ),
-                    enabledBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(8),
-                      borderSide: BorderSide(color: Colors.grey.shade300),
-                    ),
-                  ),
-                );
-              },
-              optionsViewBuilder: (context, onSelected, options) {
-                return Material(
-                  elevation: 4,
-                  child: ListView(
-                    children: options
-                        .map((option) => Material(
-                              child: InkWell(
-                                onTap: () => onSelected(option),
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 16, vertical: 10),
-                                  child: Text(option),
-                                ),
-                              ),
-                            ))
-                        .toList(),
-                  ),
-                );
-              },
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
-        Text(
-          'OR',
-          textAlign: TextAlign.center,
-          style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
-        ),
-        const SizedBox(height: 12),
-        Row(
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  const Text('Latitude',
-                      style: TextStyle(
-                          fontSize: 12, color: Color.fromARGB(255, 108, 117, 125))),
-                  const SizedBox(height: 6),
-                  TextField(
-                    controller: TextEditingController(text: location?.latitude.toString() ?? ''),
-                    keyboardType: TextInputType.number,
-                    onChanged: (value) async {
-                      final lat = double.tryParse(value);
-                      if (lat != null && location != null) {
-                        final newLocation = location.copyWith(latitude: lat);
-                        await _updateLocationAndCalculate(newLocation);
-                      }
-                    },
-                    decoration: InputDecoration(
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(8),
-                        borderSide: BorderSide(color: Colors.grey.shade300),
-                      ),
-                      enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(8),
-                        borderSide: BorderSide(color: Colors.grey.shade300),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  const Text('Longitude',
-                      style: TextStyle(
-                          fontSize: 12, color: Color.fromARGB(255, 108, 117, 125))),
-                  const SizedBox(height: 6),
-                  TextField(
-                    controller: TextEditingController(text: location?.longitude.toString() ?? ''),
-                    keyboardType: TextInputType.number,
-                    onChanged: (value) async {
-                      final lon = double.tryParse(value);
-                      if (lon != null && location != null) {
-                        final newLocation = location.copyWith(longitude: lon);
-                        await _updateLocationAndCalculate(newLocation);
-                      }
-                    },
-                    decoration: InputDecoration(
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(8),
-                        borderSide: BorderSide(color: Colors.grey.shade300),
-                      ),
-                      enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(8),
-                        borderSide: BorderSide(color: Colors.grey.shade300),
-                      ),
-                    ),
-                  ),
-                ],
               ),
             ),
           ],

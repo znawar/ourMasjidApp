@@ -2,9 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
-import 'package:timezone/timezone.dart' as tz;
 import 'package:timezone/data/latest.dart' as tz_data;
-import 'package:admin_web/providers/prayer_times_provider.dart';
 
 /// Centralized theme for the admin web application.
 /// This ensures consistent styling across all screens.
@@ -631,7 +629,6 @@ class MasjidClock extends StatefulWidget {
 
 class _MasjidClockState extends State<MasjidClock> {
   late Timer _timer;
-  DateTime _now = DateTime.now();
 
   @override
   void initState() {
@@ -646,16 +643,8 @@ class _MasjidClockState extends State<MasjidClock> {
 
   void _tick() {
     if (!mounted) return;
-    setState(() {
-      // Use the provider's masjidNow which already handles timezone correctly
-      try {
-        final provider = Provider.of<PrayerTimesProvider>(context, listen: false);
-        _now = provider.masjidNow;
-      } catch (_) {
-        // Fallback if provider is not available
-        _now = DateTime.now();
-      }
-    });
+    // Just trigger a rebuild; the build method will compute the current time
+    setState(() {});
   }
 
   @override
