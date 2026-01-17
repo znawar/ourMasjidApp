@@ -28,7 +28,7 @@ class PrayerApiService {
   };
 
   // Get prayer times by city
-  static Future<Map<String, String>> getPrayerTimesByCity({
+  static Future<Map<String, dynamic>> getPrayerTimesByCity({
     required String city,
     required String country,
     required String method,
@@ -63,36 +63,40 @@ class PrayerApiService {
         
         if (data['code'] == 200) {
           final timings = data['data']['timings'];
+          final meta = data['data']['meta'];
           
           return {
-            'Fajr': timings['Fajr'] ?? '05:00',
-            'Sunrise': timings['Sunrise'] ?? '06:00',
-            'Dhuhr': timings['Dhuhr'] ?? '12:00',
-            'Asr': timings['Asr'] ?? '15:00',
-            'Maghrib': timings['Maghrib'] ?? '18:00',
-            'Isha': timings['Isha'] ?? '19:00',
-            'Imsak': timings['Imsak'] ?? '04:50',
-            'Midnight': timings['Midnight'] ?? '00:00',
+            'timings': {
+              'Fajr': timings['Fajr'] ?? '05:00',
+              'Sunrise': timings['Sunrise'] ?? '06:00',
+              'Dhuhr': timings['Dhuhr'] ?? '12:00',
+              'Asr': timings['Asr'] ?? '15:00',
+              'Maghrib': timings['Maghrib'] ?? '18:00',
+              'Isha': timings['Isha'] ?? '19:00',
+              'Imsak': timings['Imsak'] ?? '04:50',
+              'Midnight': timings['Midnight'] ?? '00:00',
+            },
+            'timezone': meta['timezone']?.toString(),
           };
         } else {
           print('AlAdhan API responded with non-success code: ${data['code']} body: ${response.body}');
-          return getDefaultPrayerTimes();
+          return {'timings': getDefaultPrayerTimes()};
         }
       } else {
         print('AlAdhan HTTP Error: ${response.statusCode} body: ${response.body}');
-        return getDefaultPrayerTimes();
+        return {'timings': getDefaultPrayerTimes()};
       }
     } on TimeoutException catch (e) {
       print('AlAdhan API Timeout: $e');
-      return getDefaultPrayerTimes();
+      return {'timings': getDefaultPrayerTimes()};
     } catch (e) {
       print('AlAdhan API Error: $e');
-      return getDefaultPrayerTimes();
+      return {'timings': getDefaultPrayerTimes()};
     }
   }
 
   // Get prayer times by coordinates (more accurate)
-  static Future<Map<String, String>> getPrayerTimesByCoordinates({
+  static Future<Map<String, dynamic>> getPrayerTimesByCoordinates({
     required double latitude,
     required double longitude,
     required String method,
@@ -124,31 +128,35 @@ class PrayerApiService {
 
         if (data['code'] == 200) {
           final timings = data['data']['timings'];
+          final meta = data['data']['meta'];
 
           return {
-            'Fajr': timings['Fajr'] ?? '05:00',
-            'Sunrise': timings['Sunrise'] ?? '06:00',
-            'Dhuhr': timings['Dhuhr'] ?? '12:00',
-            'Asr': timings['Asr'] ?? '15:00',
-            'Maghrib': timings['Maghrib'] ?? '18:00',
-            'Isha': timings['Isha'] ?? '19:00',
-            'Imsak': timings['Imsak'] ?? '04:50',
-            'Midnight': timings['Midnight'] ?? '00:00',
+            'timings': {
+              'Fajr': timings['Fajr'] ?? '05:00',
+              'Sunrise': timings['Sunrise'] ?? '06:00',
+              'Dhuhr': timings['Dhuhr'] ?? '12:00',
+              'Asr': timings['Asr'] ?? '15:00',
+              'Maghrib': timings['Maghrib'] ?? '18:00',
+              'Isha': timings['Isha'] ?? '19:00',
+              'Imsak': timings['Imsak'] ?? '04:50',
+              'Midnight': timings['Midnight'] ?? '00:00',
+            },
+            'timezone': meta['timezone']?.toString(),
           };
         } else {
           print('AlAdhan API responded with non-success code: ${data['code']} body: ${response.body}');
-          return getDefaultPrayerTimes();
+          return {'timings': getDefaultPrayerTimes()};
         }
       } else {
         print('AlAdhan HTTP Error: ${response.statusCode} body: ${response.body}');
-        return getDefaultPrayerTimes();
+        return {'timings': getDefaultPrayerTimes()};
       }
     } on TimeoutException catch (e) {
       print('AlAdhan API Timeout: $e');
-      return getDefaultPrayerTimes();
+      return {'timings': getDefaultPrayerTimes()};
     } catch (e) {
       print('AlAdhan API Error: $e');
-      return getDefaultPrayerTimes();
+      return {'timings': getDefaultPrayerTimes()};
     }
   }
 

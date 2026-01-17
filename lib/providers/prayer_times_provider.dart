@@ -52,108 +52,124 @@ class PrayerTimesProvider with ChangeNotifier {
   }
 
   Future<void> _updateMasjidTime() async {
-    try {
-      final loc = _prayerSettings?.location;
-      if (loc == null) {
-        _masjidNow = DateTime.now();
-        notifyListeners();
-        return;
-      }
+  try {
+    final loc = _prayerSettings?.location;
+    if (loc == null) {
+      _masjidNow = DateTime.now();
+      notifyListeners();
+      return;
+    }
 
-      // Determine timezone ID – prefer explicit IANA ID stored in settings.
-      String tzId = (loc.timezone).trim();
+    // Determine timezone ID – prefer explicit IANA ID stored in settings.
+    String tzId = (loc.timezone).trim();
 
-      if (tzId.isEmpty || tzId.toLowerCase() == 'auto') {
-        // Use cache if location hasn't changed to prevent API spam
-        final currentLocKey = '${loc.country}:${loc.city}:${loc.latitude}:${loc.longitude}';
-        if (_cachedTzId != null && _lastLocKey == currentLocKey) {
-          tzId = _cachedTzId!;
-        } else {
-          if (_isResolvingTz) {
+    // CRITICAL FIX: Reset _cachedTzId if location has changed
+    final currentLocKey = '${loc.country}:${loc.city}:${loc.latitude}:${loc.longitude}';
+    if (_lastLocKey != currentLocKey) {
+      _cachedTzId = null;
+      _lastLocKey = currentLocKey;
+    }
+
+    if (tzId.isEmpty || tzId.toLowerCase() == 'auto') {
+      // Use cache if available
+      if (_cachedTzId != null) {
+        tzId = _cachedTzId!;
+      } else {
+        if (_isResolvingTz) {
+          _masjidNow = DateTime.now();
+          notifyListeners();
+          return;
+        }
+        
+        _isResolvingTz = true;
+        try {
+          String? resolvedTz;
+          
+          // Priority 1: Resolution from coordinates
+          if (loc.latitude != 0.0 || loc.longitude != 0.0) {
+            final res = await TimezoneService.getTimezoneFromFreeService(loc.latitude, loc.longitude);
+            if (res != null && res.timezoneId.isNotEmpty) {
+              resolvedTz = res.timezoneId;
+              debugPrint('📍 Timezone resolved from coordinates: $resolvedTz');
+            }
+          }
+
+          // Priority 2: Guess from country
+          if ((resolvedTz == null || resolvedTz.isEmpty) && loc.country.isNotEmpty) {
+            final guessed = await TimezoneService.guessTimezoneFromCountry(loc.country);
+            if (guessed != null && guessed.trim().isNotEmpty) {
+              resolvedTz = guessed;
+              debugPrint('📍 Timezone guessed from country: $resolvedTz');
+            }
+          }
+
+          if (resolvedTz != null && resolvedTz.isNotEmpty && resolvedTz.toLowerCase() != 'auto') {
+            tzId = resolvedTz;
+            _cachedTzId = resolvedTz;
+          } else {
+            // Even if we can't resolve, use device time but with proper notification
             _masjidNow = DateTime.now();
+            debugPrint('⏰ Using device time (timezone resolution failed)');
             notifyListeners();
             return;
           }
-          
-          _isResolvingTz = true;
-          try {
-            // Priority 1: Resolution from coordinates
-            if (loc.latitude != 0.0 || loc.longitude != 0.0) {
-              final res = await TimezoneService.getTimezoneFromFreeService(loc.latitude, loc.longitude);
-              if (res != null) {
-                tzId = res.timezoneId;
-              }
-            }
-
-            // Priority 2: Guess from country
-            if (tzId.isEmpty || tzId.toLowerCase() == 'auto') {
-              final guessed = await TimezoneService.guessTimezoneFromCountry(loc.country);
-              if (guessed != null && guessed.trim().isNotEmpty) {
-                tzId = guessed;
-              }
-            }
-
-            if (tzId.isNotEmpty && tzId.toLowerCase() != 'auto') {
-              _cachedTzId = tzId;
-              _lastLocKey = currentLocKey;
-            } else {
-              _masjidNow = DateTime.now();
-              return;
-            }
-          } finally {
-            _isResolvingTz = false;
-          }
+        } finally {
+          _isResolvingTz = false;
         }
       }
-
-      // Use timezone package to get masjid-local time; this correctly
-      // handles DST and city-level offsets for the chosen IANA zone.
-      try {
-        final location = tz.getLocation(tzId);
-        _masjidNow = tz.TZDateTime.now(location);
-      } catch (e) {
-        // Fallback for Etc/GMT or UTC+XX:XX format
-        if (tzId.startsWith('Etc/GMT') || tzId.startsWith('UTC')) {
-          final match = RegExp(r"(?:Etc/GMT|UTC)([+-])(\d{1,2})(?::(\d{2}))?").firstMatch(tzId);
-          if (match != null) {
-            final signStr = match.group(1);
-            final hours = int.tryParse(match.group(2) ?? '0') ?? 0;
-            final minutes = int.tryParse(match.group(3) ?? '0') ?? 0;
-            
-            int offsetSeconds = (hours * 3600) + (minutes * 60);
-            
-            bool shouldAdd = false;
-            if (tzId.startsWith('UTC')) {
-              shouldAdd = (signStr == '+');
-            } else {
-              // Etc/GMT-5 is UTC+5, so '-' means add.
-              shouldAdd = (signStr == '-');
-            }
-            
-            final totalOffset = shouldAdd ? offsetSeconds : -offsetSeconds;
-            
-            // Generate a custom location to keep _masjidNow as a TZDateTime.
-            // This is CRITICAL for display logic that constructs new dates (like prayer times).
-            final customTz = tz.TimeZone(totalOffset, isDst: false, abbreviation: 'LMT');
-            final customLocation = tz.Location(tzId, [0], [0], [customTz]);
-            _masjidNow = tz.TZDateTime.now(customLocation);
-          } else {
-            _masjidNow = DateTime.now();
-          }
-        } else {
-          debugPrint('Unknown timezone "$tzId" – falling back to device time: $e');
-          _masjidNow = DateTime.now();
-        }
-      }
-
-      notifyListeners();
-    } catch (e) {
-      debugPrint('Error updating masjid time: $e');
-      _masjidNow = DateTime.now();
-      notifyListeners();
     }
-  }
 
+    // Log the timezone being used
+    debugPrint('🔄 Updating masjid time with timezone: $tzId');
+
+    // Use timezone package to get masjid-local time
+    try {
+      final location = tz.getLocation(tzId);
+      _masjidNow = tz.TZDateTime.now(location);
+      debugPrint('✅ Masjid time updated: $_masjidNow (Timezone: $tzId)');
+    } catch (e) {
+      // Fallback for Etc/GMT or UTC+XX:XX format
+      if (tzId.startsWith('Etc/GMT') || tzId.startsWith('UTC')) {
+        final match = RegExp(r"(?:Etc/GMT|UTC)([+-])(\d{1,2})(?::(\d{2}))?").firstMatch(tzId);
+        if (match != null) {
+          final signStr = match.group(1);
+          final hours = int.tryParse(match.group(2) ?? '0') ?? 0;
+          final minutes = int.tryParse(match.group(3) ?? '0') ?? 0;
+          
+          int offsetSeconds = (hours * 3600) + (minutes * 60);
+          
+          bool shouldAdd = false;
+          if (tzId.startsWith('UTC')) {
+            shouldAdd = (signStr == '+');
+          } else {
+            // Etc/GMT-5 is UTC+5, so '-' means add.
+            shouldAdd = (signStr == '-');
+          }
+          
+          final totalOffset = shouldAdd ? offsetSeconds : -offsetSeconds;
+          
+          // Generate a custom location to keep _masjidNow as a TZDateTime.
+          final customTz = tz.TimeZone(totalOffset, isDst: false, abbreviation: 'LMT');
+          final customLocation = tz.Location(tzId, [0], [0], [customTz]);
+          _masjidNow = tz.TZDateTime.now(customLocation);
+          debugPrint('✅ Masjid time (custom offset): $_masjidNow (Offset: ${totalOffset~/3600}h ${(totalOffset.abs()%3600)~/60}m)');
+        } else {
+          _masjidNow = DateTime.now();
+          debugPrint('⚠️ Could not parse timezone pattern "$tzId", using device time');
+        }
+      } else {
+        debugPrint('❌ Unknown timezone "$tzId" – falling back to device time: $e');
+        _masjidNow = DateTime.now();
+      }
+    }
+
+    notifyListeners();
+  } catch (e) {
+    debugPrint('❌ Error updating masjid time: $e');
+    _masjidNow = DateTime.now();
+    notifyListeners();
+  }
+}
   void _initializeFirebase() {
     try {
       _firestore = FirebaseFirestore.instance;
@@ -418,7 +434,7 @@ class PrayerTimesProvider with ChangeNotifier {
           _prayerSettings!.location.longitude != 0.0) {
         // Use coordinates
         debugPrint('Using coordinates: ${_prayerSettings!.location.latitude}, ${_prayerSettings!.location.longitude}');
-        apiTimes = await PrayerApiService.getPrayerTimesByCoordinates(
+        final apiResponse = await PrayerApiService.getPrayerTimesByCoordinates(
           latitude: _prayerSettings!.location.latitude,
           longitude: _prayerSettings!.location.longitude,
           method: _prayerSettings!.calculationSettings.method,
@@ -426,10 +442,11 @@ class PrayerTimesProvider with ChangeNotifier {
           adjustmentMethod: _prayerSettings!.calculationSettings.highLatitudeRule,
           adjustment: _prayerSettings!.calculationSettings.adjustmentMinutes,
         );
+        apiTimes = Map<String, String>.from(apiResponse['timings'] ?? {});
       } else {
         // Use city/country
         debugPrint('Using city/country');
-        apiTimes = await PrayerApiService.getPrayerTimesByCity(
+        final apiResponse = await PrayerApiService.getPrayerTimesByCity(
           city: _prayerSettings!.location.city,
           country: _prayerSettings!.location.country,
           method: _prayerSettings!.calculationSettings.method,
@@ -437,6 +454,7 @@ class PrayerTimesProvider with ChangeNotifier {
           adjustmentMethod: _prayerSettings!.calculationSettings.highLatitudeRule,
           adjustment: _prayerSettings!.calculationSettings.adjustmentMinutes,
         );
+        apiTimes = Map<String, String>.from(apiResponse['timings'] ?? {});
       }
 
       debugPrint('✅ API Response: $apiTimes');

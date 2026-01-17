@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:timezone/timezone.dart' as tz;
 
 class TimezoneResult {
   final String timezoneId; // e.g. "America/New_York"
@@ -103,57 +104,21 @@ class TimezoneService {
     }
   }
 
-  /// Maps common country names to IANA timezone IDs for fallback when no coordinates.
+  /// Returns a sorted list of all available IANA timezone IDs.
+  static List<String> getAllTimezones() {
+    try {
+      final zones = tz.timeZoneDatabase.locations.keys.toList();
+      zones.sort();
+      return zones;
+    } catch (e) {
+      debugPrint('Error getting timezones: $e');
+      return ['UTC'];
+    }
+  }
+
+  /// Maps common country names to IANA timezone IDs using TimeZoneDB API
   static Future<String?> guessTimezoneFromCountry(String country) async {
     var c = country.trim().toLowerCase();
-    
-    // Quick hardcoded common mapping to avoid API calls and get better results than first offset
-    final commonMapping = {
-      'australia': 'Australia/Sydney',
-      'united kingdom': 'Europe/London',
-      'uk': 'Europe/London',
-      'usa': 'America/New_York',
-      'united states': 'America/New_York',
-      'canada': 'America/Toronto',
-      'pakistan': 'Asia/Karachi',
-      'india': 'Asia/Kolkata',
-      'bangladesh': 'Asia/Dhaka',
-      'uae': 'Asia/Dubai',
-      'united arab emirates': 'Asia/Dubai',
-      'saudi arabia': 'Asia/Riyadh',
-      'malaysia': 'Asia/Kuala_Lumpur',
-      'singapore': 'Asia/Singapore',
-      'indonesia': 'Asia/Jakarta',
-      'turkey': 'Europe/Istanbul',
-      'egypt': 'Africa/Cairo',
-      'morocco': 'Africa/Casablanca',
-      'south africa': 'Africa/Johannesburg',
-      'qatar': 'Asia/Qatar',
-      'kuwait': 'Asia/Kuwait',
-      'oman': 'Asia/Muscat',
-      'bahrain': 'Asia/Bahrain',
-      'jordan': 'Asia/Amman',
-      'lebanon': 'Asia/Beirut',
-      'new zealand': 'Pacific/Auckland',
-      'france': 'Europe/Paris',
-      'germany': 'Europe/Berlin',
-      'spain': 'Europe/Madrid',
-      'italy': 'Europe/Rome',
-      'netherlands': 'Europe/Amsterdam',
-      'sweden': 'Europe/Stockholm',
-      'norway': 'Europe/Oslo',
-      'denmark': 'Europe/Copenhagen',
-      'ireland': 'Europe/Dublin',
-      'portugal': 'Europe/Lisbon',
-      'switzerland': 'Europe/Zurich',
-      'austria': 'Europe/Vienna',
-      'belgium': 'Europe/Brussels',
-    };
-
-    if (commonMapping.containsKey(c)) {
-      debugPrint('🔍 Hardcoded mapping used for: "$c" -> ${commonMapping[c]}');
-      return commonMapping[c];
-    }
     
     debugPrint('🌍 TimezoneService.guessTimezoneFromCountry() input: "$country" -> "$c"');
 
@@ -162,87 +127,138 @@ class TimezoneService {
       return null;
     }
 
-    try {
-      // Use REST Countries API to get timezone info for a country by name
-      // Free service, no API key required
-      final url = Uri.https('restcountries.com', '/v3.1/name/$c', {
-        'fullText': 'true', // Exact match
-      });
-      final resp = await http.get(url);
-      
-      if (resp.statusCode == 200) {
-        final List<dynamic> data = jsonDecode(resp.body);
-        if (data.isNotEmpty) {
-          final countryData = data[0] as Map<String, dynamic>;
-          
-          // REST Countries API returns timezones as a Map with timezone names as keys
-          // e.g. "timezones": ["UTC+00:00", "UTC+01:00"] or as a map {"UTC+00:00": "GMT", ...}
-          // We need to find the actual IANA timezone ID
-          final timezonesData = countryData['timezones'];
-          
-          if (timezonesData != null) {
-            String? ianaTimezone;
-            
-            // Try to get IANA timezone from various possible API response formats
-            if (timezonesData is List && timezonesData.isNotEmpty) {
-              // If it's a list, find the first one that looks like an IANA timezone (e.g., "Asia/Dhaka")
-              for (final tz in timezonesData) {
-                final tzStr = tz.toString().trim();
-                if (tzStr.contains('/')) {
-                  ianaTimezone = tzStr;
-                  break;
-                }
-              }
-              // If no IANA format found, just use the first one
-              if (ianaTimezone == null && timezonesData.isNotEmpty) {
-                ianaTimezone = timezonesData[0].toString().trim();
-              }
-            } else if (timezonesData is Map) {
-              // If it's a map, try to extract the first key that has a '/'
-              for (final tzKey in timezonesData.keys) {
-                final tzStr = tzKey.toString().trim();
-                if (tzStr.contains('/')) {
-                  ianaTimezone = tzStr;
-                  break;
-                }
-              }
-              // Fallback to first key if no IANA format
-              if (ianaTimezone == null && timezonesData.isNotEmpty) {
-                ianaTimezone = timezonesData.keys.first.toString().trim();
-              }
-            }
-            
-            if (ianaTimezone != null && ianaTimezone.isNotEmpty) {
-              // Convert "UTC+05:30" or "UTC+05" to "Etc/GMT-5" or manual offset format
-              if (ianaTimezone.startsWith('UTC')) {
-                final match = RegExp(r"UTC([+-])(\d{1,2})(?::(\d{2}))?").firstMatch(ianaTimezone);
-                if (match != null) {
-                  final sign = match.group(1);
-                  final hours = int.tryParse(match.group(2) ?? '0') ?? 0;
-                  final minutes = int.tryParse(match.group(3) ?? '0') ?? 0;
-                  
-                  // If it has minutes, we can't use Etc/GMT easily, so we'll keep the UTC format
-                  // and handles it in the provider/TV display manual logic.
-                  // But for pure hours, Etc/GMT is better if supported.
-                  if (minutes == 0) {
-                    final etcSign = sign == '+' ? '-' : '+';
-                    ianaTimezone = 'Etc/GMT$etcSign$hours';
-                  }
-                }
-              }
+    // Hardcoded country name to code mapping - check this first with fuzzy matching
+    final countryCodeMap = {
+      'united states': 'US',
+      'usa': 'US',
+      'united kingdom': 'GB',
+      'uk': 'GB',
+      'canada': 'CA',
+      'australia': 'AU',
+      'india': 'IN',
+      'pakistan': 'PK',
+      'bangladesh': 'BD',
+      'banglade': 'BD', // Handle partial/truncated input
+      'sri lanka': 'LK',
+      'nepal': 'NP',
+      'uae': 'AE',
+      'united arab emirates': 'AE',
+      'saudi arabia': 'SA',
+      'malaysia': 'MY',
+      'singapore': 'SG',
+      'indonesia': 'ID',
+      'turkey': 'TR',
+      'egypt': 'EG',
+      'morocco': 'MA',
+      'south africa': 'ZA',
+      'qatar': 'QA',
+      'kuwait': 'KW',
+      'oman': 'OM',
+      'bahrain': 'BH',
+      'jordan': 'JO',
+      'lebanon': 'LB',
+      'new zealand': 'NZ',
+      'france': 'FR',
+      'germany': 'DE',
+      'spain': 'ES',
+      'italy': 'IT',
+      'netherlands': 'NL',
+      'sweden': 'SE',
+      'norway': 'NO',
+      'denmark': 'DK',
+      'ireland': 'IE',
+      'portugal': 'PT',
+      'switzerland': 'CH',
+      'austria': 'AT',
+      'belgium': 'BE',
+    };
 
-              debugPrint('🔍 REST Countries API lookup: "$c" -> Result: "$ianaTimezone"');
-              return ianaTimezone;
+    // Try hardcoded map first (exact match)
+    String? countryCode = countryCodeMap[c];
+    if (countryCode != null) {
+      debugPrint('🔍 Using hardcoded country code: $countryCode for "$c"');
+    } else {
+      // Try fuzzy match: check if any key starts with input or input starts with key
+      for (final entry in countryCodeMap.entries) {
+        if (entry.key.startsWith(c) || c.startsWith(entry.key)) {
+          countryCode = entry.value;
+          debugPrint('🔍 Using fuzzy-matched country code: $countryCode for "$c" (matched with "${entry.key}")');
+          break;
+        }
+      }
+    }
+
+    // If still no code, try REST Countries API with fullText=false for partial match
+    if (countryCode == null) {
+      try {
+        final url = Uri.https('restcountries.com', '/v3.1/name/$c', {
+          'fullText': 'false', // Allow partial matches
+        });
+        final resp = await http.get(url).timeout(const Duration(seconds: 5));
+        
+        if (resp.statusCode == 200) {
+          final List<dynamic> data = jsonDecode(resp.body);
+          if (data.isNotEmpty) {
+            final countryData = data[0] as Map<String, dynamic>;
+            final cca2 = countryData['cca2'] as String?;
+            if (cca2 != null && cca2.isNotEmpty) {
+              countryCode = cca2;
+              debugPrint('🔍 Found country code via REST API: $countryCode for "$c"');
             }
           }
         }
-      } else if (resp.statusCode == 404) {
-        debugPrint('⚠️ Country not found: "$c"');
+      } catch (e) {
+        debugPrint('⚠️ REST Countries API error: $e');
       }
-    } catch (e) {
-      debugPrint('⚠️ REST Countries API error: $e');
     }
-    
+
+    // If we have a country code, use TimeZoneDB to get timezone
+    if (countryCode != null && countryCode.isNotEmpty) {
+      try {
+        final url = Uri.http('api.timezonedb.com', '/v2.1/list-time-zone', {
+          'key': '4068P1GO72CR',
+          'format': 'json',
+          'country': countryCode,
+        });
+        final resp = await http.get(url).timeout(const Duration(seconds: 8));
+        
+        if (resp.statusCode == 200) {
+          final Map<String, dynamic> data = jsonDecode(resp.body);
+          if (data['status'] == 'OK') {
+            final zones = data['zones'] as List<dynamic>?;
+            if (zones != null && zones.isNotEmpty) {
+              // Try to find the most populated/important city
+              // Sort by population if available, otherwise use the first zone
+              List<Map<String, dynamic>> zoneList = [];
+              for (var zone in zones) {
+                zoneList.add(zone as Map<String, dynamic>);
+              }
+              
+              // Sort by population (descending)
+              zoneList.sort((a, b) {
+                final popA = a['population'] as int? ?? 0;
+                final popB = b['population'] as int? ?? 0;
+                return popB.compareTo(popA);
+              });
+              
+              final bestZone = zoneList.first;
+              final tzId = bestZone['zoneName'] as String?;
+              if (tzId != null && tzId.isNotEmpty) {
+                debugPrint('🔍 TimeZoneDB lookup for "$countryCode": Found timezone: $tzId');
+                return tzId;
+              }
+            }
+          } else {
+            debugPrint('⚠️ TimeZoneDB error: ${data['error'] ?? "Unknown error"}');
+          }
+        } else {
+          debugPrint('⚠️ TimeZoneDB API error: Status code ${resp.statusCode}');
+        }
+      } catch (e) {
+        debugPrint('⚠️ TimeZoneDB API error: $e');
+      }
+    }
+
     debugPrint('🔍 Could not determine timezone for: "$c"');
     return null;
   }

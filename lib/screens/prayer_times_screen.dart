@@ -416,10 +416,16 @@ class _LocationPickerWidgetState extends State<LocationPickerWidget> {
   }
 
   void _initializeControllers() {
-    _cityController = TextEditingController(text: widget.location.city);
-    _countryController = TextEditingController(text: widget.location.country);
+    // Ensure full values are preserved, strip any accidental whitespace
+    final savedCity = widget.location.city.trim();
+    final savedCountry = widget.location.country.trim();
+    
+    _cityController = TextEditingController(text: savedCity);
+    _countryController = TextEditingController(text: savedCountry);
     _latitudeController = TextEditingController(text: widget.location.latitude != 0.0 ? widget.location.latitude.toString() : '');
     _longitudeController = TextEditingController(text: widget.location.longitude != 0.0 ? widget.location.longitude.toString() : '');
+    
+    debugPrint('🔍 LocationPicker initialized with - City: "$savedCity", Country: "$savedCountry"');
   }
 
   Future<void> _loadCountries() async {
@@ -575,6 +581,7 @@ class _LocationPickerWidgetState extends State<LocationPickerWidget> {
                   ),
                   onChanged: (value) {
                     _countryController.text = value;
+                    debugPrint('📍 Country changed to: "$value"');
                     widget.onLocationChanged(widget.location.copyWith(country: value));
                   },
                 );
@@ -664,6 +671,7 @@ class _LocationPickerWidgetState extends State<LocationPickerWidget> {
                   ),
                   onChanged: (value) {
                     _cityController.text = value;
+                    debugPrint('📍 City input changed to: "$value"');
                     _searchCitiesDebounced(value);
                     widget.onLocationChanged(widget.location.copyWith(city: value));
                   },
@@ -674,14 +682,26 @@ class _LocationPickerWidgetState extends State<LocationPickerWidget> {
                 return _cityApiSuggestions;
               },
               onSelected: (String selection) async {
-                _cityController.text = selection.split(',').first.trim();
+                // Extract city name (before comma) and country (after comma) if format is "City, Country"
+                final parts = selection.split(',');
+                final cityName = parts.first.trim();
+                final countryFromSelection = parts.length > 1 ? parts[1].trim() : _countryController.text;
+                
+                // Update controllers with the full, clean names
+                _cityController.text = cityName;
+                _countryController.text = countryFromSelection;
+                
+                debugPrint('✅ Selected city: "$cityName", country: "$countryFromSelection"');
                 
                 final coords = await LocationAutocompleteService.resolveToCoordinates(
                   selection,
                   country: _countryController.text.isEmpty ? null : _countryController.text,
                 );
                 
-                var newLocation = widget.location.copyWith(city: _cityController.text);
+                var newLocation = widget.location.copyWith(
+                  city: cityName,
+                  country: countryFromSelection,
+                );
                 
                 if (coords != null) {
                   final lat = coords['lat'] ?? 0.0;
@@ -1774,6 +1794,7 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
     );
   }
 
+  // ignore: unused_element
   Widget _buildAthanAutomatic_deprecated(PrayerTimesProvider provider) {
     final settings = provider.prayerSettings;
     final current = settings?.calculationSettings ?? CalculationSettings();
@@ -2773,6 +2794,7 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
     );
     // Removed stray duplicated code
   }
+  // ignore: unused_element
   Widget _buildOverridesEditor(PrayerTimesProvider provider) {
     final settings = provider.prayerSettings;
     if (settings == null) return const SizedBox.shrink();
@@ -2882,6 +2904,7 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
     );
   }
 
+  // ignore: unused_element
   String _locationSummary(PrayerSettings? settings) {
     if (settings == null) return '--';
     final loc = settings.location;
@@ -2943,6 +2966,7 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
     );
   }
 
+  // ignore: unused_element
   Widget _buildTabNavigation() {
     return Container(
       decoration: BoxDecoration(
@@ -3053,6 +3077,7 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
     );
   }
 
+  // ignore: unused_element
   Widget _buildAdhanTab(PrayerTimesProvider provider) {
     return Container(
       decoration: BoxDecoration(
@@ -3342,6 +3367,7 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
     );
   }
 
+  // ignore: unused_element
   Widget _buildIqamahTab(PrayerTimesProvider provider) {
     return Container(
       decoration: BoxDecoration(
@@ -3739,6 +3765,7 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
     );
   }
 
+  // ignore: unused_element
   Widget _buildGeneralSettings(PrayerTimesProvider provider) {
     return Container(
       decoration: BoxDecoration(
@@ -4066,7 +4093,6 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
     switch (prayer.toLowerCase()) {
       case 'fajr':
         return AdminTheme.primaryBlue;
-        return AdminTheme.accentSkyBlue;
       case 'asr':
         return AdminTheme.accentEmerald;
       case 'maghrib':

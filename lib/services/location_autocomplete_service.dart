@@ -56,6 +56,7 @@ class LocationAutocompleteService {
   }
 
   /// Lookup ISO2 country code. Returns null if not found.
+  // ignore: unused_element
   static String? _getCountryCode(String? country) {
     if (country == null) return null;
     final key = country.trim().toLowerCase();

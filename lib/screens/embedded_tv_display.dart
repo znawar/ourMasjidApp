@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:admin_web/models/prayer_settings_model.dart';
 import 'package:flutter/material.dart';
 import 'package:carousel_slider/carousel_slider.dart';
+import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -121,12 +123,15 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
   double? _masjidLongitude;
   String? _masjidCity;
   String? _masjidCountry;
-  String? _calculationMethod;
   
   // Timezone
   String? _timezoneName;
   DateTime? _masjidLocalTime;
   bool _timezoneResolved = false;
+  Timer? _timezoneRetryTimer;
+  int _timezoneRetryAttempts = 0;
+  static const int _maxTimezoneRetryAttempts = 5;
+  bool _timezoneResolutionInProgress = false;
   
   // Masjid-local time derived from timezone; no external time API needed
   String? _iqamahBackgroundImageUrl;
@@ -167,7 +172,68 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
     _calculateNextPrayer();
     _checkCurrentPrayerTimes();
   }
+void _updateLocalTime() {
+  try {
+    final tzName = _timezoneName?.trim().toLowerCase();
+    
+    // Log current state for debugging
+    debugPrint('⏰ _updateLocalTime called. Timezone: "$_timezoneName", Resolved: $_timezoneResolved');
+    
+    if (tzName == null || 
+        tzName.isEmpty || 
+        tzName == 'auto' || 
+        tzName.contains('device')) {
+      _masjidLocalTime = DateTime.now();
+      debugPrint('⏰ Using device time (${_masjidLocalTime}) - no valid timezone');
+      return;
+    }
 
+    try {
+      // Try to use the timezone package
+      final location = tz.getLocation(_timezoneName!);
+      _masjidLocalTime = tz.TZDateTime.now(location);
+      debugPrint('✅✅✅ Using resolved timezone "$_timezoneName" -> Masjid time: ${_masjidLocalTime} | Device time: ${DateTime.now()}');
+    } catch (tzError) {
+      debugPrint('⚠️ Could not use timezone "$_timezoneName": $tzError');
+      
+      // Fallback for manual offset formats
+      if (_timezoneName!.startsWith('Etc/GMT') || _timezoneName!.startsWith('UTC')) {
+        // Parse offset and create custom location
+        final match = RegExp(r"(?:Etc/GMT|UTC)([+-])(\d{1,2})(?::(\d{2}))?").firstMatch(_timezoneName!);
+        if (match != null) {
+          final signStr = match.group(1);
+          final hours = int.tryParse(match.group(2) ?? '0') ?? 0;
+          final minutes = int.tryParse(match.group(3) ?? '0') ?? 0;
+          
+          int offsetSeconds = (hours * 3600) + (minutes * 60);
+          
+          // Determine direction (Etc/GMT-5 = UTC+5)
+          bool shouldAdd = false;
+          if (_timezoneName!.startsWith('UTC')) {
+            shouldAdd = (signStr == '+');
+          } else {
+            shouldAdd = (signStr == '-');
+          }
+          
+          final totalOffset = shouldAdd ? offsetSeconds : -offsetSeconds;
+          
+          // Calculate manual offset
+          _masjidLocalTime = DateTime.now().add(Duration(seconds: totalOffset));
+          debugPrint('✅ Using manual offset "$_timezoneName" (${totalOffset ~/ 3600}h ${(totalOffset.abs() % 3600) ~/ 60}m) -> ${_masjidLocalTime}');
+        } else {
+          debugPrint('❌ Could not parse timezone pattern "$_timezoneName", using device time');
+          _masjidLocalTime = DateTime.now();
+        }
+      } else {
+        debugPrint('❌ Unknown timezone format "$_timezoneName", using device time');
+        _masjidLocalTime = DateTime.now();
+      }
+    }
+  } catch (e) {
+    debugPrint('❌ Critical error in _updateLocalTime: $e');
+    _masjidLocalTime = DateTime.now();
+  }
+}
   Future<void> _initializeFirebase() async {
     try {
       firestore = FirebaseFirestore.instance;
@@ -403,170 +469,313 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
     });
   }
 
-  void _extractLocationData(Map<String, dynamic> data) {
-    try {
-      // Check for location in various possible structures
-      if (data['location'] is Map) {
-        final location = data['location'] as Map;
-        _masjidCity = location['city']?.toString() ?? '';
-        _masjidCountry = location['country']?.toString() ?? '';
-        _masjidLatitude = (location['latitude'] is num) 
-            ? (location['latitude'] as num).toDouble() 
-            : null;
-        _masjidLongitude = (location['longitude'] is num) 
-            ? (location['longitude'] as num).toDouble() 
-            : null;
-        
-        // Extract calculation method
-        final method = location['calculationMethod']?.toString() ?? data['calculationMethod']?.toString() ?? '';
-        if (method.isNotEmpty) {
-          _calculationMethod = method;
-        }
-        
-        // If a concrete timezone is stored in the document, use it immediately.
-        // Ignore placeholder values like 'Auto' so we can resolve from lat/lng.
-        final tzField = location['timezone'] ?? location['timeZone'] ?? location['tz'];
-        if (tzField is String) {
-          final tzStr = tzField.trim();
-          if (tzStr.isNotEmpty && tzStr.toLowerCase() != 'auto') {
-            _timezoneName = tzStr;
-            _timezoneResolved = true;
-            // Update local time now that we have a real timezone
-            _updateLocalTime();
-            print('Using stored timezone from document: $_timezoneName');
-          }
-        }
-      }
-      
-      // Also check direct fields
-      if ((_masjidCity == null || _masjidCity!.isEmpty) && data['city'] != null) {
-        _masjidCity = data['city']?.toString() ?? '';
-      }
-      if ((_masjidCountry == null || _masjidCountry!.isEmpty) && data['country'] != null) {
-        _masjidCountry = data['country']?.toString() ?? '';
-      }
-      
-      print('Extracted location: $_masjidCity, $_masjidCountry');
-      print('Calculation method: $_calculationMethod');
-    } catch (e) {
-      print('Error extracting location data: $e');
+ void _extractLocationData(Map<String, dynamic> data) {
+  try {
+    final LocationSettings loc = LocationSettings.fromMap(
+      data['location'] as Map<String, dynamic>?,
+      data,
+    );
+
+    final String? newCity = loc.city;
+    final String? newCountry = loc.country;
+    final double? newLat = loc.latitude != 0.0 ? loc.latitude : null;
+    final double? newLon = loc.longitude != 0.0 ? loc.longitude : null;
+    final String? newTz = (loc.timezone.isNotEmpty && 
+                          loc.timezone.toLowerCase() != 'auto') ? loc.timezone : null;
+
+    // Check if location has actually changed
+    final bool locationChanged = 
+        newCity != _masjidCity || 
+        newCountry != _masjidCountry || 
+        newLat != _masjidLatitude || 
+        newLon != _masjidLongitude ||
+        newTz != _timezoneName;
+
+    if (locationChanged) {
+      debugPrint('📍📍📍 Location changed for TV: resetting timezone resolution');
+      _timezoneResolved = false; // Reset flag
+      _resetTimezoneRetryState();
     }
+
+    _masjidCity = newCity;
+    _masjidCountry = newCountry;
+    _masjidLatitude = newLat;
+    _masjidLongitude = newLon;
+
+    // If we have a direct timezone in the data, use it immediately
+    if (newTz != null && newTz.isNotEmpty) {
+      _timezoneName = newTz;
+      _timezoneResolved = true;
+      _resetTimezoneRetryState();
+      _updateLocalTime();
+      debugPrint('✅ Using stored timezone from document: $_timezoneName');
+    } else if (locationChanged) {
+      _timezoneName = 'Auto';
+      // Trigger resolution if we have city/country info
+      if ((newCity != null && newCity.isNotEmpty) || 
+          (newCountry != null && newCountry.isNotEmpty)) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _resolveTimezoneFromCityCountry();
+        });
+      }
+    }
+
+    debugPrint('TV Extracted location: $_masjidCity, $_masjidCountry, TZ: $_timezoneName');
+  } catch (e) {
+    debugPrint('Error extracting location data for TV: $e');
+  }
+}
+  Future<void> _resolveTimezoneFromCityCountry() async {
+  if (_timezoneResolutionInProgress) {
+    debugPrint('⏳ Timezone resolution already in progress, skipping duplicate call');
+    return;
   }
 
-  Future<void> _resolveTimezoneFromCityCountry() async {
-    // We require at least *some* location hint: city/country or coordinates.
-    final hasCityOrCountry =
-        (_masjidCity != null && _masjidCity!.trim().isNotEmpty) ||
-        (_masjidCountry != null && _masjidCountry!.trim().isNotEmpty);
-    final hasCoords = _masjidLatitude != null && _masjidLongitude != null;
+  final hasCityOrCountry =
+      (_masjidCity != null && _masjidCity!.trim().isNotEmpty) ||
+      (_masjidCountry != null && _masjidCountry!.trim().isNotEmpty);
+  final hasCoords = _masjidLatitude != null && _masjidLongitude != null;
+  final hasLocationHint = hasCityOrCountry || hasCoords;
 
-    if (!hasCityOrCountry && !hasCoords) {
-      return;
-    }
+  debugPrint('🌍 Starting timezone resolution: City=$_masjidCity, Country=$_masjidCountry, Coords=($_masjidLatitude, $_masjidLongitude)');
 
-    if (_timezoneResolved) return;
+  if (!hasLocationHint) {
+    debugPrint('❌ No location data available for timezone resolution');
+    _timezoneResolved = true;
+    return;
+  }
 
-    try {
-      String? tzId;
+  // Check if already resolved with a valid timezone (not "Auto" or "Device Time")
+  final currentTz = _timezoneName?.trim().toLowerCase();
+  if (_timezoneResolved && 
+      currentTz != null && 
+      currentTz.isNotEmpty &&
+      !currentTz.contains('auto') &&
+      !currentTz.contains('device')) {
+    debugPrint('⏭️ Timezone already resolved: $_timezoneName');
+    return;
+  }
 
-      // 1) Prefer coordinate-based lookup when we have lat/lng; this
-      // gives us the exact city timezone (including Adelaide, etc.).
-      if (hasCoords) {
+  _timezoneResolutionInProgress = true;
+  try {
+    String? tzId;
+
+    // FIRST PRIORITY: Try using coordinates
+    if (hasCoords) {
+      debugPrint('🔍 Attempting coordinate-based timezone lookup: ($_masjidLatitude, $_masjidLongitude)');
+      
+      // Try multiple services in order
+      final timestamp = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      
+      // 1. Try TimeZoneDB first (most reliable)
+      tzId = await _tryGetTimezoneFromCoordinates();
+      
+      if (tzId == null || tzId.isEmpty) {
+        // 2. Try Google API if available
+        // tzId = await TimezoneService.getTimezoneFromGoogle(...);
+        // 3. Fallback to free service
         final res = await TimezoneService.getTimezoneFromFreeService(_masjidLatitude!, _masjidLongitude!);
         if (res != null) {
           tzId = res.timezoneId;
+          debugPrint('✅ Free service coordinate lookup succeeded: $tzId');
         }
       }
+    }
 
-      // 2) If that failed, try a simple city/country map with
-      // explicit entries for common cities.
-      if ((tzId == null || tzId.isEmpty) && hasCityOrCountry) {
-        final city = _masjidCity?.trim() ?? '';
-        final country = _masjidCountry?.trim() ?? '';
-        tzId = await _getSimpleTimezoneFromCityCountry(city, country);
+    // SECOND PRIORITY: Try to get timezone from city/country using TimeZoneDB API
+    if ((tzId == null || tzId.isEmpty) && hasCityOrCountry) {
+      debugPrint('🔍 Attempting city/country lookup via TimeZoneDB');
+      tzId = await _getTimezoneFromCityCountryUsingAPI();
+      
+      if (tzId != null && tzId.isNotEmpty && tzId != 'UTC') {
+        debugPrint('✅ City/country lookup succeeded: $tzId');
       }
+    }
 
-      // 3) As a last resort, fall back to a country-level guess.
-      if ((tzId == null || tzId.isEmpty) && _masjidCountry != null && _masjidCountry!.trim().isNotEmpty) {
-        tzId = await TimezoneService.guessTimezoneFromCountry(_masjidCountry!.trim());
-      }
-
+    // THIRD PRIORITY: Country guess fallback
+    if ((tzId == null || tzId.isEmpty) && _masjidCountry != null && _masjidCountry!.trim().isNotEmpty) {
+      debugPrint('🔍 Attempting country-level guess: ${_masjidCountry!.trim()}');
+      tzId = await TimezoneService.guessTimezoneFromCountry(_masjidCountry!.trim());
       if (tzId != null && tzId.isNotEmpty) {
-        _timezoneName = tzId;
-        _timezoneResolved = true;
-        print('Resolved timezone for TV display: $_timezoneName');
-        _updateLocalTime();
-        if (mounted) {
-          setState(() {
-            now = _masjidLocalTime ?? DateTime.now();
-          });
-        }
-        return;
-      }
-
-      // If everything failed, fall back to device time but keep the flag
-      // so we don't loop endlessly.
-      _timezoneName = 'Device Time';
-      _timezoneResolved = true;
-      _updateLocalTime();
-      if (mounted) {
-        setState(() {
-          now = _masjidLocalTime ?? DateTime.now();
-        });
-      }
-    } catch (e) {
-      print('Error resolving timezone: $e');
-      _timezoneName = 'Device Time';
-      _timezoneResolved = true;
-      _updateLocalTime();
-      if (mounted) {
-        setState(() {
-          now = _masjidLocalTime ?? DateTime.now();
-        });
+        debugPrint('✅ Country guess succeeded: $tzId');
+      } else {
+        debugPrint('⚠️ Country guess failed');
       }
     }
-  }
 
-  // Unused method - timezone is now handled via timezone_service and location data
-  /* 
-  Future<String?> _getTimezoneFromAPI(String city, String country) async {
-    try {
-      // Using TimezoneDB API (you need to sign up for a free API key)
-      const apiKey = 'YOUR_TIMEZONEDB_API_KEY'; // Get from https://timezonedb.com/api
-      final encodedCity = Uri.encodeComponent(city);
-      final encodedCountry = Uri.encodeComponent(country);
+    // FOURTH PRIORITY: Check if we already have a timezone in firebase data
+    if ((tzId == null || tzId.isEmpty) && firebasePrayerTimes.isNotEmpty) {
+      try {
+        final LocationSettings loc = LocationSettings.fromMap(
+          firebasePrayerTimes['location'] as Map<String, dynamic>?,
+          firebasePrayerTimes,
+        );
+        final storedTz = loc.timezone;
+        if (storedTz.isNotEmpty && storedTz.toLowerCase() != 'auto') {
+          tzId = storedTz;
+          debugPrint('✅ Using stored timezone from document: $tzId');
+        }
+      } catch (e) {
+        debugPrint('⚠️ Error extracting stored timezone: $e');
+      }
+    }
+
+    if (tzId != null && tzId.isNotEmpty) {
+      // Mark as resolved and update everything
+      _timezoneName = tzId;
+      _timezoneResolved = true;
+      _resetTimezoneRetryState();
       
-      final response = await http.get(
-        Uri.parse('http://api.timezonedb.com/v2.1/get-time-zone?key=$apiKey&format=json&by=city&city=$encodedCity&country=$encodedCountry')
-      );
+      debugPrint('✅✅✅ Resolved timezone for TV display: $_timezoneName');
       
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
+      // Force update local time
+      _updateLocalTime();
+      
+      if (mounted) {
+        setState(() {
+          // Use the updated masjid local time
+          now = _masjidLocalTime ?? DateTime.now();
+          // Recalculate everything
+          _calculateNextPrayer();
+          _checkCurrentPrayerTimes();
+        });
+      }
+      return;
+    }
+
+    debugPrint('❌ All timezone resolution methods failed, using device time');
+    _timezoneName = 'Device Time';
+    _timezoneResolved = true;
+    _resetTimezoneRetryState();
+    
+    _updateLocalTime();
+    if (mounted) {
+      setState(() {
+        now = _masjidLocalTime ?? DateTime.now();
+        _calculateNextPrayer();
+        _checkCurrentPrayerTimes();
+      });
+    }
+
+  } catch (e) {
+    debugPrint('❌ Error resolving timezone: $e');
+    _timezoneName = 'Device Time';
+    _timezoneResolved = true;
+    _resetTimezoneRetryState();
+    
+    _updateLocalTime();
+    if (mounted) {
+      setState(() {
+        now = _masjidLocalTime ?? DateTime.now();
+        _calculateNextPrayer();
+        _checkCurrentPrayerTimes();
+      });
+    }
+  } finally {
+    _timezoneResolutionInProgress = false;
+  }
+}
+
+// NEW METHOD: Try to get timezone from coordinates using TimeZoneDB
+Future<String?> _tryGetTimezoneFromCoordinates() async {
+  try {
+    const apiKey = '4068P1GO72CR'; // Your TimeZoneDB API key
+    final result = await TimezoneService.getTimezoneFromTimeZoneDb(
+      _masjidLatitude!,
+      _masjidLongitude!,
+      apiKey,
+    );
+    
+    if (result != null && result.timezoneId.isNotEmpty) {
+      debugPrint('✅ TimeZoneDB coordinate lookup succeeded: ${result.timezoneId}');
+      return result.timezoneId;
+    }
+  } catch (e) {
+    debugPrint('⚠️ TimeZoneDB coordinate lookup error: $e');
+  }
+  return null;
+}
+
+// NEW METHOD: Get timezone from city/country using TimeZoneDB API
+Future<String?> _getTimezoneFromCityCountryUsingAPI() async {
+  try {
+    // First, try to get country code
+    String? countryCode;
+    final country = _masjidCountry?.trim() ?? '';
+    
+    if (country.isNotEmpty) {
+      // Try to get country code from REST Countries API
+      try {
+        final url = Uri.https('restcountries.com', '/v3.1/name/$country', {
+          'fullText': 'true',
+        });
+        final resp = await http.get(url).timeout(const Duration(seconds: 5));
+        
+        if (resp.statusCode == 200) {
+          final List<dynamic> data = jsonDecode(resp.body);
+          if (data.isNotEmpty) {
+            final countryData = data[0] as Map<String, dynamic>;
+            countryCode = countryData['cca2'] as String?;
+          }
+        }
+      } catch (e) {
+        debugPrint('⚠️ REST Countries API error: $e');
+      }
+    }
+    
+    // If we have country code, try TimeZoneDB
+    if (countryCode != null && countryCode.isNotEmpty) {
+      const apiKey = '4068P1GO72CR';
+      final url = Uri.http('api.timezonedb.com', '/v2.1/list-time-zone', {
+        'key': apiKey,
+        'format': 'json',
+        'country': countryCode,
+      });
+      
+      final resp = await http.get(url).timeout(const Duration(seconds: 8));
+      
+      if (resp.statusCode == 200) {
+        final Map<String, dynamic> data = jsonDecode(resp.body);
         if (data['status'] == 'OK') {
-          return data['zoneName'];
+          final zones = data['zones'] as List<dynamic>?;
+          if (zones != null && zones.isNotEmpty) {
+            // Try to find the capital or most populated city
+            List<Map<String, dynamic>> zoneList = [];
+            for (var zone in zones) {
+              zoneList.add(zone as Map<String, dynamic>);
+            }
+            
+            // Sort by population (descending)
+            zoneList.sort((a, b) {
+              final popA = a['population'] as int? ?? 0;
+              final popB = b['population'] as int? ?? 0;
+              return popB.compareTo(popA);
+            });
+            
+            // Also check if we have city name match
+            final city = _masjidCity?.trim().toLowerCase() ?? '';
+            if (city.isNotEmpty) {
+              for (var zone in zoneList) {
+                final zoneName = (zone['zoneName'] as String?)?.toLowerCase() ?? '';
+                if (zoneName.contains(city)) {
+                  return zone['zoneName'] as String;
+                }
+              }
+            }
+            
+            // Return most populated city's timezone
+            final bestZone = zoneList.first;
+            return bestZone['zoneName'] as String?;
+          }
         }
       }
-      
-      // If TimezoneDB fails, try Geonames API (alternative)
-      const geonamesUsername = 'YOUR_GEONAMES_USERNAME'; // Get from http://www.geonames.org
-      final geonamesResponse = await http.get(
-        Uri.parse('http://api.geonames.org/timezoneJSON?formatted=true&lat=0&lng=0&username=$geonamesUsername&style=full')
-      );
-      
-      if (geonamesResponse.statusCode == 200) {
-        final geonamesData = json.decode(geonamesResponse.body);
-        if (geonamesData['timezoneId'] != null) {
-          return geonamesData['timezoneId'];
-        }
-      }
-      
-      return null;
-    } catch (e) {
-      print('API timezone error: $e');
-      return null;
     }
+  } catch (e) {
+    debugPrint('⚠️ Error in city/country API lookup: $e');
   }
-  */
+  
+  return null;
+}
 
   Future<String> _getSimpleTimezoneFromCityCountry(String city, String country) async {
     // Use the same timezone service API that the provider uses
@@ -580,55 +789,31 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
     return 'UTC';
   }
 
-  void _updateLocalTime() {
-    try {
-      if (_timezoneName == null || _timezoneName!.isEmpty || _timezoneName == 'Device Time') {
-        _masjidLocalTime = DateTime.now();
-        return;
-      }
+  void _resetTimezoneRetryState() {
+    _timezoneRetryAttempts = 0;
+    _timezoneRetryTimer?.cancel();
+    _timezoneRetryTimer = null;
+  }
 
-      // Use timezone package to compute masjid-local time. This handles
-      // DST and city-level differences for the stored IANA timezone.
-      try {
-        final location = tz.getLocation(_timezoneName!);
-        _masjidLocalTime = tz.TZDateTime.now(location);
-      } catch (e) {
-        // Fallback for Etc/GMT or UTC+XX:XX format
-        if (_timezoneName!.startsWith('Etc/GMT') || _timezoneName!.startsWith('UTC')) {
-          final match = RegExp(r"(?:Etc/GMT|UTC)([+-])(\d{1,2})(?::(\d{2}))?").firstMatch(_timezoneName!);
-          if (match != null) {
-            final signStr = match.group(1);
-            final hours = int.tryParse(match.group(2) ?? '0') ?? 0;
-            final minutes = int.tryParse(match.group(3) ?? '0') ?? 0;
-            
-            int offsetSeconds = (hours * 3600) + (minutes * 60);
-            
-            bool shouldAdd = false;
-            if (_timezoneName!.startsWith('UTC')) {
-              shouldAdd = (signStr == '+');
-            } else {
-              // Etc/GMT-5 is UTC+5, so '-' means add.
-              shouldAdd = (signStr == '-');
-            }
-            
-            final totalOffset = shouldAdd ? offsetSeconds : -offsetSeconds;
-            
-            // Create a temporary timezone location for the manual offset
-            final customTz = tz.TimeZone(totalOffset, isDst: false, abbreviation: 'LMT');
-            final customLocation = tz.Location(_timezoneName!, [0], [0], [customTz]);
-            _masjidLocalTime = tz.TZDateTime.now(customLocation);
-          } else {
-            _masjidLocalTime = DateTime.now();
-          }
-        } else {
-          print('Unknown timezone "$_timezoneName" – falling back to device time: $e');
-          _masjidLocalTime = DateTime.now();
-        }
-      }
-    } catch (e) {
-      print('Error updating local time: $e');
-      _masjidLocalTime = DateTime.now();
+  void _scheduleTimezoneRetry() {
+    if (_timezoneRetryAttempts >= _maxTimezoneRetryAttempts) {
+      debugPrint('⚠️ Max timezone retry attempts reached ($_timezoneRetryAttempts). Giving up.');
+      _timezoneResolved = true;
+      return;
     }
+
+    _timezoneRetryAttempts++;
+    int delaySeconds = 15 + (_timezoneRetryAttempts - 1) * 6;
+    if (delaySeconds > 45) {
+      delaySeconds = 45;
+    }
+
+    debugPrint('⏳ Scheduling timezone retry #$_timezoneRetryAttempts in ${delaySeconds}s');
+    _timezoneRetryTimer?.cancel();
+    _timezoneRetryTimer = Timer(Duration(seconds: delaySeconds), () {
+      if (!mounted) return;
+      _resolveTimezoneFromCityCountry();
+    });
   }
 
   Map<String, Map<String, String>> _extractPrayerTimes(
@@ -790,6 +975,7 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
   void dispose() {
     _timer?.cancel();
     _iqamahTimer?.cancel();
+    _timezoneRetryTimer?.cancel();
     Wakelock.disable();
     _announcementsSub?.cancel();
     _prayerTimesSub?.cancel();
@@ -858,6 +1044,11 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
         _calculateNextPrayer();
         _checkCurrentPrayerTimes();
       });
+      
+      // Log every 30 seconds to track time updates
+      if (DateTime.now().second % 30 == 0) {
+        debugPrint('⏰ TV Clock: $_timezoneName | Local: $newNow | Device: ${DateTime.now()}');
+      }
     });
   }
 
@@ -1001,15 +1192,12 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
   }
 
   void _calculateNextPrayer() {
-    // Always base "next prayer" purely on the same `now`
-    // value that is shown on the digital clock so the
-    // countdown and the clock stay perfectly in sync.
+
     final DateTime base = now;
     DateTime? nextTime;
     String? nextName;
 
-    // Only consider the 5 main prayers in canonical order,
-    // to match the admin dashboard logic.
+  
     const prayerOrder = ['Fajr', 'Dhuhr', 'Asr', 'Maghrib', 'Isha'];
 
     final source = _currentPrayerTimes.isNotEmpty
@@ -1053,57 +1241,48 @@ class _TVDisplayScreenState extends State<TVDisplayScreen> {
     }
   }
 
-  DateTime? _parseTimeToDateTime(String input, DateTime base) {
-    final value = input.trim();
-    if (value.isEmpty || value == '--' || value == '--:--') return null;
+ DateTime? _parseTimeToDateTime(String input, DateTime base) {
+  final value = input.trim();
+  if (value.isEmpty || value == '--' || value == '--:--') return null;
 
-    DateTime? parsed;
-    for (final fmt in [
-      DateFormat('HH:mm'),
-      DateFormat('H:mm'),
-      DateFormat('h:mm a'),
-      DateFormat('h:mm a'),
-    ]) {
-      try {
-        parsed = fmt.parseStrict(value);
-        break;
-      } catch (_) {}
-    }
-
-    int hour = -1;
-    int minute = -1;
-
-    if (parsed != null) {
-      hour = parsed.hour;
-      minute = parsed.minute;
-    } else {
-      if (!value.contains(':')) return null;
-      final parts = value.split(':');
-      if (parts.length < 2) return null;
-      hour = int.tryParse(parts[0]) ?? -1;
-      minute = int.tryParse(parts[1].replaceAll(RegExp(r'[^0-9]'), '')) ?? -1;
-    }
-
+  // Parse the time string (HH:mm format)
+  int hour = -1;
+  int minute = -1;
+  
+  try {
+    final parts = value.split(':');
+    if (parts.length < 2) return null;
+    
+    hour = int.tryParse(parts[0]) ?? -1;
+    minute = int.tryParse(parts[1].replaceAll(RegExp(r'[^0-9]'), '')) ?? -1;
+    
     if (hour < 0 || minute < 0 || hour > 23 || minute > 59) return null;
-
-    // Create a naive DateTime first
-    final naiveDt = DateTime(base.year, base.month, base.day, hour, minute);
-
-    // If we have a resolved timezone for the masjid, create a TZDateTime in that timezone
-    // so comparisons with _masjidLocalTime (also a TZDateTime) work correctly.
-    if (_timezoneName != null && _timezoneName!.isNotEmpty && _timezoneName != 'Device Time') {
-      try {
-        final location = tz.getLocation(_timezoneName!);
-        // Create a TZDateTime in the masjid's timezone using the naive time as-is
-        return tz.TZDateTime(location, naiveDt.year, naiveDt.month, naiveDt.day, naiveDt.hour, naiveDt.minute);
-      } catch (e) {
-        print('Error creating TZDateTime for prayer time: $e');
-      }
-    }
-
-    // Fallback: return naive DateTime (less accurate for timezone mismatches)
-    return naiveDt;
+  } catch (e) {
+    debugPrint('❌ Error parsing time "$input": $e');
+    return null;
   }
+
+  // Create DateTime in the masjid's timezone context
+  // Base is already in masjid-local time (from _updateLocalTime)
+  final naiveDt = DateTime(base.year, base.month, base.day, hour, minute);
+  
+  // If we have a resolved timezone, convert to TZDateTime
+  if (_timezoneName != null && 
+      _timezoneName!.isNotEmpty && 
+      !_timezoneName!.toLowerCase().contains('device') &&
+      !_timezoneName!.toLowerCase().contains('auto')) {
+    try {
+      final location = tz.getLocation(_timezoneName!);
+      return tz.TZDateTime(location, naiveDt.year, naiveDt.month, naiveDt.day, hour, minute);
+    } catch (e) {
+      debugPrint('⚠️ Could not create TZDateTime for "$_timezoneName": $e');
+      return naiveDt;
+    }
+  }
+  
+  // Fallback: return naive DateTime
+  return naiveDt;
+}
 
   String _formatDuration(Duration d) {
     String two(int n) => n.toString().padLeft(2, '0');
@@ -1333,58 +1512,23 @@ Widget _buildGelPrayerButtons() {
                   end: Alignment.bottomRight,
                   colors: isNext
                       ? [
-                          const Color(0xFF69F0AE).withOpacity(0.3),
-                          const Color(0xFF00C853).withOpacity(0.3),
-                          const Color(0xFF00C853).withOpacity(0.3),
+                          const Color(0xFF69F0AE).withOpacity(0.5),
+                          const Color(0xFF00C853).withOpacity(0.5),
+                          const Color(0xFF00C853).withOpacity(0.5),
                         ]
                       : isActive
                           ? [
-                              const Color(0xFFFFB74D).withOpacity(0.3),
-                              const Color(0xFFFF9800).withOpacity(0.3),
-                              const Color(0xFFFF9800).withOpacity(0.3),
+                              const Color(0xFFFFB74D).withOpacity(0.5),
+                              const Color(0xFFFF9800).withOpacity(0.5),
+                              const Color(0xFFFF9800).withOpacity(0.5),
                             ]
                           : [
-                              const Color(0xFF64B5F6).withOpacity(0.3),
-                              const Color(0xFF1976D2).withOpacity(0.3),
-                              const Color(0xFF1976D2).withOpacity(0.3),
+                              const Color(0xFF64B5F6).withOpacity(0.5),
+                              const Color(0xFF1976D2).withOpacity(0.5),
+                              const Color(0xFF1976D2).withOpacity(0.5),
                             ],
                   stops: const [0.0, 0.6, 1.0],
                 ),
-                boxShadow: [
-                  BoxShadow(
-                    color: isNext
-                        ? Colors.green[900]!.withOpacity(0.3)
-                        : isActive
-                            ? Colors.orange[900]!.withOpacity(0.3)
-                            : const Color(0xFF0D47A1).withOpacity(0.3),
-                    blurRadius: 20 * scale,
-                    spreadRadius: 3 * scale,
-                    offset: Offset(0, 10 * scale),
-                  ),
-                  BoxShadow(
-                    color: Colors.white.withOpacity(0.2),
-                    blurRadius: 10 * scale,
-                    spreadRadius: -2 * scale,
-                    offset: Offset(-4 * scale, -4 * scale),
-                  ),
-                  BoxShadow(
-                    color: isNext
-                        ? Colors.green[900]!.withOpacity(0.3)
-                        : isActive
-                            ? Colors.orange[900]!.withOpacity(0.3)
-                            : const Color(0xFF0D47A1).withOpacity(0.3),
-                    blurRadius: 10 * scale,
-                    spreadRadius: -2 * scale,
-                    offset: Offset(4 * scale, 4 * scale),
-                  ),
-                  BoxShadow(
-                    color: Colors.white.withOpacity(0.2),
-                    blurRadius: 20 * scale,
-                    spreadRadius: 0,
-                    offset: Offset(-15 * scale, -15 * scale),
-                    blurStyle: BlurStyle.outer,
-                  ),
-                ],
                 border: Border.all(
                   color: Colors.white.withOpacity(0.3),
                   width: 1.5 * scale,
@@ -1529,7 +1673,16 @@ Widget _buildGelPrayerButtons() {
       children: [
         // Background color fallback
         Container(
-          color: Colors.grey.shade900,
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [
+                Colors.blue.withOpacity(0.5),
+                Colors.white.withOpacity(0.5),
+              ],
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+            ),
+          ),
         ),
         // Background image - from Firestore (base64) or fallback to asset
         if (_iqamahBackgroundImageUrl != null && _iqamahBackgroundImageUrl!.isNotEmpty)
@@ -1579,7 +1732,7 @@ Widget _buildGelPrayerButtons() {
                     TextSpan(
                       text: 'Prayer for ',
                       style: TextStyle(
-                        fontSize: 56 * scale,
+                        fontSize: 90* scale,
                         fontWeight: FontWeight.w700,
                         color: Colors.white,
                         fontFamily: 'Roboto',
@@ -1595,7 +1748,7 @@ Widget _buildGelPrayerButtons() {
                     TextSpan(
                       text: currentPrayerName,
                       style: TextStyle(
-                        fontSize: 56 * scale,
+                        fontSize: 90 * scale,
                         fontWeight: FontWeight.w900,
                         color: Colors.green,
                         fontFamily: 'Roboto',
@@ -1610,9 +1763,9 @@ Widget _buildGelPrayerButtons() {
                       ),
                     ),
                     TextSpan(
-                      text: ' in',
+                      text: ' has started',
                       style: TextStyle(
-                        fontSize: 56 * scale,
+                        fontSize: 90 * scale,
                         fontWeight: FontWeight.w700,
                         color: Colors.white,
                         fontFamily: 'Roboto',
@@ -1668,14 +1821,17 @@ Widget _buildGelPrayerButtons() {
           ),
         ),
         // Content
-        Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text(
-                'Prayer for',
+        Align(
+          alignment: Alignment.topCenter,
+          child: Padding(
+            padding: EdgeInsets.only(top: 100 * (MediaQuery.of(context).size.height / 1080.0)),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.start,
+              children: [
+                Text(
+                  'Prayer for',
                 style: TextStyle(
-                  fontSize: 44 * scale,
+                  fontSize: 90* scale,
                   fontWeight: FontWeight.w600,
                   color: Colors.white,
                   fontFamily: 'Roboto',
@@ -1692,7 +1848,7 @@ Widget _buildGelPrayerButtons() {
               Text(
                 currentPrayerName,
                 style: TextStyle(
-                  fontSize: 80 * scale,
+                  fontSize: 100 * scale,
                   fontWeight: FontWeight.w900,
                   color: Colors.amber,
                   fontFamily: 'Roboto',
@@ -1707,99 +1863,49 @@ Widget _buildGelPrayerButtons() {
                 ),
               ),
               SizedBox(height: 50 * scale),
-              Container(
-                padding: EdgeInsets.symmetric(
-                  horizontal: 50 * scale,
-                  vertical: 40 * scale,
-                ),
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [
-                      Colors.amber.withOpacity(0.3),
-                      Colors.orange.withOpacity(0.2),
-                    ],
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                  ),
-                  borderRadius: BorderRadius.circular(30 * scale),
-                  border: Border.all(
-                    color: Colors.amber.withOpacity(0.6),
-                    width: 3,
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.amber.withOpacity(0.4),
-                      blurRadius: 20,
-                      spreadRadius: 5,
-                      offset: Offset(0, 10),
-                    ),
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.5),
-                      blurRadius: 15,
-                      offset: Offset(2, 4),
-                    ),
-                  ],
-                ),
-                child: Column(
-                  children: [
-                    Text(
-                      'in',
-                      style: TextStyle(
-                        fontSize: 32 * scale,
-                        fontWeight: FontWeight.w700,
-                        color: Colors.white,
-                        fontFamily: 'Roboto',
-                        letterSpacing: 3,
-                        shadows: [
-                          Shadow(
-                            blurRadius: 4,
-                            color: Colors.black.withOpacity(0.7),
+              Column(
+                children: [
+                  Text(
+                    'In',
+                    style: TextStyle(
+                      fontSize: 90 * scale,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.white,
+                      fontFamily: 'Roboto',
+                      letterSpacing: 3,
+                      shadows: [
+                        Shadow(
+                          blurRadius: 4,
+                          color: Colors.black.withOpacity(0.7),
                             offset: Offset(1, 1),
                           ),
                         ],
                       ),
                     ),
                     SizedBox(height: 20 * scale),
-                    Container(
-                      padding: EdgeInsets.symmetric(
-                        horizontal: 30 * scale,
-                        vertical: 15 * scale,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.amber.withOpacity(0.15),
-                        borderRadius: BorderRadius.circular(15 * scale),
-                        border: Border.all(
-                          color: Colors.amber.withOpacity(0.5),
-                          width: 2,
-                        ),
-                      ),
-                      child: Text(
-                        _formatDuration(iqamahCountdown),
-                        style: TextStyle(
-                          fontSize: 96 * scale,
-                          fontWeight: FontWeight.w900,
-                          color: Colors.amber,
-                          fontFamily: 'RobotoMono',
-                          letterSpacing: 4,
-                          shadows: [
-                            Shadow(
-                              blurRadius: 8,
-                              color: Colors.black.withOpacity(0.8),
-                              offset: Offset(2, 2),
-                            ),
-                            Shadow(
-                              blurRadius: 4,
-                              color: Colors.amber.withOpacity(0.5),
-                              offset: Offset(-1, -1),
-                            ),
-                          ],
-                        ),
+                    Text(
+                      _formatDuration(iqamahCountdown),
+                      style: TextStyle(
+                        fontSize: 96 * scale,
+                        fontWeight: FontWeight.w900,
+                        color: Colors.amber,
+                        fontFamily: 'RobotoMono',
+                        letterSpacing: 4,
+                        shadows: [
+                          Shadow(
+                            blurRadius: 8,
+                            color: Colors.black.withOpacity(0.8),
+                            offset: Offset(2, 2),
+                          ),
+                  
+                        ],
                       ),
                     ),
                   ],
-                ),
-              ),
-            ],
+                )
+              ],
+            ),
+      
           ),
         ),
         _buildGelPrayerButtons(),
@@ -2032,7 +2138,7 @@ Widget build(BuildContext context) {
             Expanded(
               child: Stack(
                 children: [
-                  (isAdhanTime || showIqamahStarted) 
+                  (isAdhanTime || showIqamahStarted)
                       ? _buildAdhanIqamahDisplay()
                       : firebaseAnnouncements.isEmpty
                           ? Container(
@@ -2116,35 +2222,6 @@ Widget build(BuildContext context) {
                   stops: const [0.0, 0.5, 1.0],
                 ),
                 borderRadius: BorderRadius.circular(30),
-                boxShadow: [
-                  BoxShadow(
-                    color: const Color(0xFF0D47A1).withOpacity(0.6),
-                    blurRadius: 40,
-                    spreadRadius: 5,
-                    offset: const Offset(5, 0),
-                  ),
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.3),
-                    blurRadius: 20,
-                    spreadRadius: -5,
-                    offset: const Offset(5, 0),
-                    blurStyle: BlurStyle.inner,
-                  ),
-                  BoxShadow(
-                    color: Colors.white.withOpacity(0.2),
-                    blurRadius: 30,
-                    spreadRadius: -10,
-                    offset: const Offset(-10, 0),
-                    blurStyle: BlurStyle.inner,
-                  ),
-                  BoxShadow(
-                    color: Colors.white.withOpacity(0.3),
-                    blurRadius: 50,
-                    spreadRadius: 0,
-                    offset: const Offset(-25, 0),
-                    blurStyle: BlurStyle.outer,
-                  ),
-                ],
                 border: Border.all(
                   color: Colors.white.withOpacity(0.2),
                   width: 1.5,

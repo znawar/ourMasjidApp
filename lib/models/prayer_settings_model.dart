@@ -73,8 +73,11 @@ class PrayerSettings {
       masjidId: masjidId,
       prayerTimes: prayerTimesMap,
       calculationSettings:
-          CalculationSettings.fromMap(data['calculationSettings']),
-      location: LocationSettings.fromMap(data['location']),
+          CalculationSettings.fromMap(data['calculationSettings'] ?? {}),
+      location: LocationSettings.fromMap(
+        data['location'] as Map<String, dynamic>?,
+        data,
+      ),
       iqamahUseDelay: iqamahUseDelay,
       jumuahTimes: jumuahTimes,
       specialTimes: specialTimes,
@@ -353,13 +356,41 @@ class LocationSettings {
     this.timezone = 'Auto',
   });
 
-  factory LocationSettings.fromMap(Map<String, dynamic> map) {
+  factory LocationSettings.fromMap(Map<String, dynamic>? map, [Map<String, dynamic>? topLevelData]) {
+    // If we have a location map, use it as primary
+    if (map != null) {
+      return LocationSettings(
+        latitude: (map['latitude'] as num?)?.toDouble() ?? 0.0,
+        longitude: (map['longitude'] as num?)?.toDouble() ?? 0.0,
+        city: map['city']?.toString() ?? '',
+        country: map['country']?.toString() ?? '',
+        timezone: map['timezone']?.toString() ?? 
+                 map['timeZone']?.toString() ?? 
+                 map['tz']?.toString() ?? 'Auto',
+      );
+    }
+    
+    // Fallback to top-level data if location map is missing (legacy/flat format)
+    if (topLevelData != null) {
+      return LocationSettings(
+        latitude: (topLevelData['latitude'] as num? ?? topLevelData['lat'] as num?)?.toDouble() ?? 0.0,
+        longitude: (topLevelData['longitude'] as num? ?? topLevelData['lon'] as num?)?.toDouble() ?? 0.0,
+        city: topLevelData['city']?.toString() ?? 
+              topLevelData['masjidCity']?.toString() ?? '',
+        country: topLevelData['country']?.toString() ?? 
+                 topLevelData['masjidCountry']?.toString() ?? '',
+        timezone: topLevelData['timezone']?.toString() ?? 
+                 topLevelData['timeZone']?.toString() ?? 
+                 topLevelData['tz']?.toString() ?? 'Auto',
+      );
+    }
+
     return LocationSettings(
-      latitude: map['latitude'] ?? 0.0,
-      longitude: map['longitude'] ?? 0.0,
-      city: map['city'] ?? '',
-      country: map['country'] ?? '',
-      timezone: map['timezone'] ?? 'Auto',
+      latitude: 0.0,
+      longitude: 0.0,
+      city: '',
+      country: '',
+      timezone: 'Auto',
     );
   }
 
